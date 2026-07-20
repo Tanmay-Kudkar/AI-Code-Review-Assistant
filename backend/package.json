@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "build": "npm run db:generate && npx prisma@6 db push",
     "db:generate": "npx prisma@6 generate",
     "db:migrate": "npx prisma@6 migrate dev",
     "db:migrate:prod": "npx prisma@6 migrate deploy",
@@ -22,8 +23,11 @@
     "prisma": "^6.19.3"
   },
   "dependencies": {
+    "@eslint/js": "^10.0.1",
     "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.19.3",
+    "adm-zip": "^0.6.0",
+    "axios": "^1.18.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -31,11 +35,14 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
+    "jsonrepair": "^3.15.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
     "openai": "^6.45.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0",
     "uuid": "^14.0.1",
     "zod": "^4.4.3"
   }

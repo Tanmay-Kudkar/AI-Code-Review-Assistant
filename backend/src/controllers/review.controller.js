@@ -9,8 +9,11 @@ const {
   runDocumentationSection,
   runBigOSection,
   runRefactoringSection,
+  generateFixSnippet,
 } = require('../services/aiReview.service');
 const { analyzeComplexity } = require('../services/complexity.service');
+const axios = require('axios');
+const { extractAndConcatenate } = require('../utils/projectParser');
 
 // ─── Submit Review ──────────────────────────────────────────────────────────
 
@@ -21,23 +24,96 @@ const { analyzeComplexity } = require('../services/complexity.service');
  * Accepts either raw code snippets (JSON) OR file uploads (multipart/form-data).
  */
 const submitReview = asyncHandler(async (req, res) => {
-  let code, language, framework, title, fileName, sourceType;
+  let code, language, framework, title, fileName, sourceType, repoUrl, selectedModules;
 
-  // 1️⃣ Determine if this is a File Upload or a Code Snippet
+  // 1️⃣ Determine if this is a File Upload or a Code Snippet or a GitHub URL
   if (req.file) {
-    // 📁 Handling File Upload
+    // 📁 Handling File Upload (ZIP or Single File)
     const ext = path.extname(req.file.originalname).toLowerCase();
-    language = req.body.language || languageFromExt(ext);
     framework = req.body.framework || 'none';
     title = req.body.title || req.file.originalname;
     fileName = req.file.originalname;
-    sourceType = 'FILE';
+
+    if (req.body.selectedModules) {
+      try {
+        selectedModules = JSON.parse(req.body.selectedModules);
+      } catch {
+        selectedModules = ['aiReview', 'documentation', 'bigO', 'refactoring'];
+      }
+    } else {
+      selectedModules = ['aiReview', 'documentation', 'bigO', 'refactoring'];
+    }
     
-    // Read the file contents from disk into memory
-    code = fs.readFileSync(req.file.path, 'utf8');
+    if (ext === '.zip') {
+      sourceType = 'PROJECT';
+      language = req.body.language || 'mixed';
+      
+      const zipBuffer = fs.readFileSync(req.file.path);
+      try {
+        code = extractAndConcatenate(zipBuffer);
+      } catch (err) {
+        fs.unlinkSync(req.file.path);
+        res.status(400);
+        throw new Error(`Failed to parse ZIP file: ${err.message}`);
+      }
+    } else {
+      sourceType = 'FILE';
+      language = req.body.language || languageFromExt(ext);
+      code = fs.readFileSync(req.file.path, 'utf8');
+    }
     
-    // 🧹 Clean up: Delete the temporary file from disk so we don't run out of storage
+    // 🧹 Clean up: Delete the temporary file from disk
     fs.unlinkSync(req.file.path);
+  } else if (req.body.githubUrl) {
+    // 🐙 Handling GitHub Repository URL
+    const schema = z.object({
+      githubUrl: z.string().url(),
+      language: z.string().optional().default('mixed'),
+      framework: z.string().optional().default('none'),
+      title: z.string().min(1).max(200),
+      selectedModules: z.array(z.string()).optional(),
+    });
+    const body = schema.parse(req.body);
+    selectedModules = body.selectedModules || ['aiReview', 'documentation', 'bigO', 'refactoring'];
+    
+    let url = body.githubUrl;
+    if (url.endsWith('/')) url = url.slice(0, -1);
+    
+    // Attempt to download the main branch zip
+    // e.g. https://github.com/facebook/react -> https://github.com/facebook/react/archive/refs/heads/main.zip
+    let zipUrl = `${url}/archive/refs/heads/main.zip`;
+    let response;
+    
+    try {
+      response = await axios.get(zipUrl, { responseType: 'arraybuffer' });
+    } catch (err) {
+      if (err.response && err.response.status === 404) {
+        // Fallback to master branch
+        zipUrl = `${url}/archive/refs/heads/master.zip`;
+        try {
+          response = await axios.get(zipUrl, { responseType: 'arraybuffer' });
+        } catch (fallbackErr) {
+          res.status(400);
+          throw new Error('Failed to download repository. Make sure the URL is a public GitHub repository and the default branch is main or master.');
+        }
+      } else {
+        res.status(400);
+        throw new Error('Failed to fetch GitHub repository.');
+      }
+    }
+    
+    try {
+      code = extractAndConcatenate(response.data);
+    } catch (err) {
+      res.status(400);
+      throw new Error(`Failed to parse repository ZIP: ${err.message}`);
+    }
+    
+    language = body.language;
+    framework = body.framework;
+    title = body.title;
+    sourceType = 'GITHUB';
+    repoUrl = url;
   } else {
     // ✂️ Handling Code Snippet
     const schema = z.object({
@@ -45,10 +121,12 @@ const submitReview = asyncHandler(async (req, res) => {
       language: z.string().min(1),
       framework: z.string().optional(),
       title: z.string().min(1).max(200),
+      selectedModules: z.array(z.string()).optional(),
     });
     
     // Validate the snippet data
     const body = schema.parse(req.body);
+    selectedModules = body.selectedModules || ['aiReview', 'documentation', 'bigO', 'refactoring'];
     code = body.code;
     language = body.language;
     framework = body.framework || 'none';
@@ -67,6 +145,7 @@ const submitReview = asyncHandler(async (req, res) => {
       sourceType,
       rawCode: code,
       fileName: fileName || null,
+      repoUrl: repoUrl || null,
       status: 'PROCESSING',
     },
   });
@@ -74,7 +153,7 @@ const submitReview = asyncHandler(async (req, res) => {
   // 3️⃣ Kick off the massive background processing pipeline!
   // ⚡ IMPORTANT: We do NOT `await` this! It runs completely in the background
   // so the user gets an instant response while the AI works behind the scenes.
-  processReview(review.id, code, language, framework).catch((err) => {
+  processReview(review.id, code, language, framework, selectedModules).catch((err) => {
     console.error(`[Review ${review.id}] Pipeline failed:`, err.message);
   });
 
@@ -98,7 +177,7 @@ const submitReview = asyncHandler(async (req, res) => {
  * Each AI section saves to the DB immediately when it finishes, so the
  * frontend can progressively unlock each tab as results arrive.
  */
-const processReview = async (reviewId, code, language, framework) => {
+const processReview = async (reviewId, code, language, framework, selectedModules = ['aiReview', 'documentation', 'bigO', 'refactoring']) => {
   try {
     // ─── Stage 1: Fast local analyses (run in parallel) ───────────────────────
     const [staticResult, complexityResult] = await Promise.all([
@@ -124,8 +203,6 @@ const processReview = async (reviewId, code, language, framework) => {
     ]);
 
     // ─── Stage 2: Create a placeholder aiResult row immediately ───────────────
-    // This lets the frontend know the AI work has started, and each section
-    // will update this same row as it finishes.
     await prisma.aiResult.create({
       data: {
         reviewId,
@@ -138,109 +215,99 @@ const processReview = async (reviewId, code, language, framework) => {
         refactoring: '',
         rawResponse: '',
         sectionsStatus: {
-          aiReview: 'processing',
-          documentation: 'processing',
-          bigO: 'processing',
-          refactoring: 'processing',
+          aiReview: selectedModules.includes('aiReview') ? 'processing' : 'skipped',
+          documentation: selectedModules.includes('documentation') ? 'processing' : 'skipped',
+          bigO: selectedModules.includes('bigO') ? 'processing' : 'skipped',
+          refactoring: selectedModules.includes('refactoring') ? 'processing' : 'skipped',
         },
       },
     });
 
-    // ─── Stage 2: Run all 4 AI sections in parallel ────────────────────────────
-    // Each section independently calls Gemini, then immediately saves its output.
-    // Promise.allSettled ensures one failure doesn't block the rest.
-    await Promise.allSettled([
+    let currentSectionsStatus = {
+      aiReview: selectedModules.includes('aiReview') ? 'processing' : 'skipped',
+      documentation: selectedModules.includes('documentation') ? 'processing' : 'skipped',
+      bigO: selectedModules.includes('bigO') ? 'processing' : 'skipped',
+      refactoring: selectedModules.includes('refactoring') ? 'processing' : 'skipped',
+    };
 
-      // 🤖 Section A: Core AI Review
-      runAiReviewSection(code, language, framework).then(async (result) => {
+    const safeDbUpdate = async (section, status, data = {}) => {
+      try {
+        currentSectionsStatus[section] = status;
         await prisma.aiResult.update({
           where: { reviewId },
           data: {
-            bugs: result.bugs,
-            smells: result.smells,
-            suggestions: result.suggestions,
-            security: result.security,
-            performance: result.performance,
-            sectionsStatus: { aiReview: 'done', documentation: 'processing', bigO: 'processing', refactoring: 'processing' },
+            ...data,
+            sectionsStatus: currentSectionsStatus,
           },
+        });
+      } catch (err) {
+        console.error(`[Review ${reviewId}] DB Update Error for ${section}:`, err.message);
+      }
+    };
+
+    // ─── Stage 2: Run all 4 AI sections sequentially ────────────────────────────
+    
+    // 🤖 Section A: Core AI Review
+    if (selectedModules.includes('aiReview')) {
+      try {
+        const result = await runAiReviewSection(code, language, framework);
+        await safeDbUpdate('aiReview', 'done', {
+          bugs: result.bugs,
+          smells: result.smells,
+          suggestions: result.suggestions,
+          security: result.security,
+          performance: result.performance,
         });
         console.log(`[Review ${reviewId}] ✅ AI Review section done`);
-      }).catch(async (err) => {
+      } catch (err) {
         console.error(`[Review ${reviewId}] ❌ AI Review section failed:`, err.message);
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: { sectionsStatus: { aiReview: 'failed', documentation: 'processing', bigO: 'processing', refactoring: 'processing' } },
-        });
-      }),
+        await safeDbUpdate('aiReview', 'failed');
+      }
+    }
 
-      // 📚 Section B: Documentation
-      runDocumentationSection(code, language, framework).then(async (result) => {
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: {
-            documentation: result.documentation,
-            sectionsStatus: { ...status, documentation: 'done' },
-          },
+    // 📚 Section B: Documentation
+    if (selectedModules.includes('documentation')) {
+      try {
+        const result = await runDocumentationSection(code, language, framework);
+        await safeDbUpdate('documentation', 'done', {
+          documentation: result.documentation,
         });
         console.log(`[Review ${reviewId}] ✅ Documentation section done`);
-      }).catch(async (err) => {
+      } catch (err) {
         console.error(`[Review ${reviewId}] ❌ Documentation section failed:`, err.message);
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: { sectionsStatus: { ...status, documentation: 'failed' } },
-        });
-      }),
+        await safeDbUpdate('documentation', 'failed');
+      }
+    }
 
-      // 🔢 Section C: Big-O Complexity
-      runBigOSection(code, language, framework).then(async (result) => {
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: {
-            complexities: result.complexities,
-            sectionsStatus: { ...status, bigO: 'done' },
-          },
+    // 🔢 Section C: Big-O Complexity
+    if (selectedModules.includes('bigO')) {
+      try {
+        const result = await runBigOSection(code, language, framework);
+        await safeDbUpdate('bigO', 'done', {
+          complexities: result.complexities,
         });
         console.log(`[Review ${reviewId}] ✅ Big-O section done`);
-      }).catch(async (err) => {
+      } catch (err) {
         console.error(`[Review ${reviewId}] ❌ Big-O section failed:`, err.message);
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: { sectionsStatus: { ...status, bigO: 'failed' } },
-        });
-      }),
+        await safeDbUpdate('bigO', 'failed');
+      }
+    }
 
-      // 🏗️ Section D: Refactoring Advice
-      runRefactoringSection(code, language, framework).then(async (result) => {
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: {
-            refactoring: result.refactoring,
-            sectionsStatus: { ...status, refactoring: 'done' },
-          },
+    // 🏗️ Section D: Refactoring Advice
+    if (selectedModules.includes('refactoring')) {
+      try {
+        const result = await runRefactoringSection(code, language, framework);
+        await safeDbUpdate('refactoring', 'done', {
+          refactoring: result.refactoring,
         });
         console.log(`[Review ${reviewId}] ✅ Refactoring section done`);
-      }).catch(async (err) => {
+      } catch (err) {
         console.error(`[Review ${reviewId}] ❌ Refactoring section failed:`, err.message);
-        const current = await prisma.aiResult.findUnique({ where: { reviewId }, select: { sectionsStatus: true } });
-        const status = (current?.sectionsStatus || {});
-        await prisma.aiResult.update({
-          where: { reviewId },
-          data: { sectionsStatus: { ...status, refactoring: 'failed' } },
-        });
-      }),
-    ]);
+        await safeDbUpdate('refactoring', 'failed');
+      }
+    }
 
-    // ✨ All sections settled. Mark review DONE.
+    // ✨ All sections settled AND saved to DB. Mark review DONE.
     await prisma.review.update({
       where: { id: reviewId },
       data: { status: 'DONE' },
@@ -257,14 +324,54 @@ const processReview = async (reviewId, code, language, framework) => {
 
 // ─── Retry Review ─────────────────────────────────────────────────────────────
 
+const runSingleSection = async (reviewId, code, language, framework, section) => {
+  const currentAiResult = await prisma.aiResult.findUnique({ where: { reviewId } });
+  if (!currentAiResult) return;
+  const currentStatus = currentAiResult.sectionsStatus || {};
+
+  const safeDbUpdate = async (status, data) => {
+    currentStatus[section] = status;
+    await prisma.aiResult.update({
+      where: { reviewId },
+      data: {
+        ...data,
+        sectionsStatus: currentStatus,
+      },
+    });
+  };
+
+  try {
+    let result;
+    if (section === 'aiReview') {
+      result = await runAiReviewSection(code, language, framework);
+      await safeDbUpdate('done', {
+        bugs: result.bugs, smells: result.smells, suggestions: result.suggestions, security: result.security, performance: result.performance,
+      });
+    } else if (section === 'documentation') {
+      result = await runDocumentationSection(code, language, framework);
+      await safeDbUpdate('done', { documentation: result.documentation });
+    } else if (section === 'bigO') {
+      result = await runBigOSection(code, language, framework);
+      await safeDbUpdate('done', { complexities: result.complexities });
+    } else if (section === 'refactoring') {
+      result = await runRefactoringSection(code, language, framework);
+      await safeDbUpdate('done', { refactoring: result.refactoring });
+    }
+  } catch (err) {
+    console.error(`[Review ${reviewId}] ❌ Section ${section} retry failed:`, err.message);
+    await safeDbUpdate('failed', {});
+  }
+};
+
 /**
  * 🔄 POST /api/reviews/:id/retry
  * 
- * Clears old results and restarts the review pipeline for a failed review.
+ * Clears old results and restarts the review pipeline (or a single section) for a review.
  */
 const retryReview = asyncHandler(async (req, res) => {
   const reviewId = req.params.id;
-  const review = await prisma.review.findUnique({
+  const { section } = req.body || {}; // e.g., 'aiReview', 'documentation', 'bigO'
+  const review = await prisma.review.findFirst({
     where: { id: reviewId, userId: req.user.id },
   });
 
@@ -273,6 +380,33 @@ const retryReview = asyncHandler(async (req, res) => {
     throw new Error('Review not found');
   }
 
+  if (section) {
+    const aiResult = await prisma.aiResult.findUnique({ where: { reviewId } });
+    if (!aiResult) {
+      res.status(400);
+      throw new Error('AI Result not initialized');
+    }
+    
+    // Set section to processing
+    await prisma.aiResult.update({
+      where: { reviewId },
+      data: {
+        sectionsStatus: {
+          ...aiResult.sectionsStatus,
+          [section]: 'processing'
+        }
+      }
+    });
+
+    // Run specific section in background
+    runSingleSection(reviewId, review.rawCode, review.language, review.framework, section).catch((err) => {
+      console.error(`[Review ${reviewId}] Retry section failed:`, err.message);
+    });
+
+    return res.json({ message: `Review retry started for section: ${section}` });
+  }
+
+  // Fallback: Retrying the entire pipeline
   // Clear any partial results that might exist
   await prisma.aiResult.deleteMany({ where: { reviewId } });
   await prisma.staticResult.deleteMany({ where: { reviewId } });
@@ -484,6 +618,29 @@ const getAiSectionsStatus = asyncHandler(async (req, res) => {
   });
 });
 
+// ─── Generate Fix ────────────────────────────────────────────────────────────
+
+/**
+ * 🚀 POST /api/reviews/:id/fix
+ * Generates an AI fix for a specific issue inside a review
+ */
+const generateFix = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { issueDescription, line } = req.body;
+
+  if (!issueDescription) {
+    return res.status(400).json({ error: 'issueDescription is required' });
+  }
+
+  const review = await prisma.review.findUnique({ where: { id } });
+  if (!review) return res.status(404).json({ error: 'Review not found' });
+  if (review.userId !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+  const fixCode = await generateFixSnippet(review.rawCode, review.language, issueDescription, line);
+
+  res.json({ fixCode });
+});
+
 module.exports = {
   submitReview,
   listReviews,
@@ -494,4 +651,5 @@ module.exports = {
   getComplexity,
   getAiSectionsStatus,
   retryReview,
+  generateFix,
 };

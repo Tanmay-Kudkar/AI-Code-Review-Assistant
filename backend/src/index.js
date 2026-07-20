@@ -10,6 +10,7 @@ const path = require('path');
 const authRoutes = require('./routes/auth.routes');
 const reviewRoutes = require('./routes/review.routes');
 const { errorHandler } = require('./middleware/error.middleware');
+const prisma = require('./utils/prisma');
 
 const app = express();
 
@@ -65,7 +66,12 @@ if (process.env.NODE_ENV !== 'test') {
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // ─── Health Check ───────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => {
+app.get('/api/', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Alias for health check at root (helps if frontend VITE_API_URL misses /api)
+app.get('/', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -83,9 +89,31 @@ app.use(errorHandler);
 
 // ─── Start Server ───────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
+
+const startServer = async () => {
+  // 1️⃣ Reset any reviews that were stuck processing when the server crashed/restarted
+  try {
+    const result = await prisma.review.updateMany({
+      where: { status: 'PROCESSING' },
+      data: { 
+        status: 'FAILED',
+        errorMessage: 'Analysis was interrupted by a server restart. Please click Retry Analysis to run it again.'
+      }
+    });
+    if (result.count > 0) {
+      console.log(`🔄 Reset ${result.count} stuck reviews to FAILED.`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to reset stuck reviews:', err.message);
+  }
+
+  // 2️⃣ Start listening for requests
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+};
+
+startServer();
 
 module.exports = app;

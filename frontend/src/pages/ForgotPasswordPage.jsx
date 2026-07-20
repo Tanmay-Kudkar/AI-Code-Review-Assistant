@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom';
 import { authApi } from '../services/api';
 import toast from 'react-hot-toast';
 import { Zap, Mail, ArrowLeft, CheckCircle } from 'lucide-react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 export default function ForgotPasswordPage() {
+  useDocumentTitle('Forgot Password');
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);

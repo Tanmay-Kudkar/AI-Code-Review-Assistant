@@ -1,10 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { reviewsApi } from '../services/api';
 import toast from 'react-hot-toast';
-import { Code2, Upload, X, FileCode, Loader, ChevronRight } from 'lucide-react';
+import { Code2, Upload, X, FileCode, Loader, ChevronRight, GitBranch, Zap } from 'lucide-react';
 import Select from 'react-select';
+import { setupMonacoTouch } from '../utils/monacoTouch';
 
 import javascriptIcon from '../assets/languages/javascript.svg';
 import typescriptIcon from '../assets/languages/typescript.svg';
@@ -154,7 +155,7 @@ const EXAMPLE_SNIPPETS = {
   dart: `int calculateSum(List<int> arr) {\n  int sum = 0;\n  for (int num in arr) {\n    sum += num;\n  }\n  return sum;\n}\n\nvoid main() {\n  var numbers = [1, 2, 3, 4, 5];\n  print(calculateSum(numbers));\n}`,
   lua: `function calculateSum(arr)\n  local sum = 0\n  for i, num in ipairs(arr) do\n    sum = sum + num\n  end\n  return sum\nend\n\nprint(calculateSum({1, 2, 3, 4, 5}))`,
   haskell: `calculateSum :: [Int] -> Int\ncalculateSum = sum\n\nmain = print (calculateSum [1..5])`,
-  elixir: `defmodule Math do\n  def sum(list) do\n    Enum.sum(list)\n  end\nend\n\nIO.puts Math.sum([1, 2, 3, 4, 5])`,
+  elixir: `defmodule Math do\n  def sum(list) {\n    Enum.sum(list)\n  }\nend\n\nIO.puts Math.sum([1, 2, 3, 4, 5])`,
   erlang: `-module(math).\n-export([sum/1]).\n\nsum(List) -> lists:sum(List).`,
   clojure: `(defn calculate-sum [arr]\n  (reduce + arr))\n\n(println (calculate-sum [1 2 3 4 5]))`,
   groovy: `def numbers = [1, 2, 3, 4, 5]\nprintln numbers.sum()`,
@@ -210,12 +211,27 @@ const FRAMEWORK_TO_LANGUAGE = {
   flutter: ['dart']
 };
 
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+
 export default function SubmitReviewPage() {
+  useDocumentTitle('New Review');
   const navigate = useNavigate();
   
   // 🎛️ UI State
-  const [tab, setTab] = useState('snippet'); // Toggles between 'snippet' and 'file' upload modes
-  const [loading, setLoading] = useState(false); // Shows a spinner while submitting
+  const [tab, setTab] = useState('snippet');
+  const [loading, setLoading] = useState(false);
+  const [editorFontSize, setEditorFontSize] = useState(14);
+  const [wordWrap, setWordWrap] = useState(false);
+  const editorInstanceRef = useRef(null);
+
+  const changeEditorFontSize = (delta) => {
+    setEditorFontSize(prev => {
+      const next = Math.min(24, Math.max(8, prev + delta));
+      editorInstanceRef.current?.updateOptions({ fontSize: next });
+      return next;
+    });
+  };
+
   const [dragOver, setDragOver] = useState(false); // Used for the nice blue glow when dragging a file
 
   // 📝 Form Data State
@@ -223,7 +239,14 @@ export default function SubmitReviewPage() {
   const [language, setLanguage] = useState('javascript');
   const [framework, setFramework] = useState('none');
   const [code, setCode] = useState('');
+  const codeRef = useRef(code);
+  codeRef.current = code; // Keep ref updated for callbacks without triggering re-renders
   const [file, setFile] = useState(null);
+  const [githubUrl, setGithubUrl] = useState('');
+  
+  const [selectedModules, setSelectedModules] = useState([
+    'aiReview', 'documentation', 'bigO'
+  ]);
 
   /**
    * 📁 Handle File Selection (from click or drop)
@@ -284,6 +307,11 @@ export default function SubmitReviewPage() {
     try {
       let data;
       
+      const backendModules = [...selectedModules];
+      if (backendModules.includes('aiReview') && !backendModules.includes('refactoring')) {
+        backendModules.push('refactoring');
+      }
+      
       // 🌿 BRANCH A: They uploaded a File
       if (tab === 'file') {
         if (!file) return toast.error('Please select a file');
@@ -294,17 +322,30 @@ export default function SubmitReviewPage() {
         formData.append('title', title);
         formData.append('language', language);
         formData.append('framework', framework);
+        formData.append('selectedModules', JSON.stringify(backendModules));
         
-        const res = await reviewsApi.submit(formData);
+        const res = await reviewsApi.submitFile(formData);
         data = res.data;
       } 
-      // 🌿 BRANCH B: They pasted a Code Snippet
+      // 🌿 BRANCH B: They provided a GitHub URL
+      else if (tab === 'github') {
+        if (!githubUrl.trim()) return toast.error('Please enter a GitHub repository URL');
+        
+        const res = await reviewsApi.submitGithub({ 
+          githubUrl, title, language, framework, selectedModules: backendModules 
+        });
+        data = res.data;
+      }
+      // 🌿 BRANCH C: They pasted a Code Snippet
       else {
         if (!code.trim()) return toast.error('Please enter some code');
         
         // Standard JSON payload is fine for strings!
-        const res = await reviewsApi.submitSnippet({ code, language, title, framework });
-        data = res.data;
+        const res = await reviewsApi.submitSnippet({ 
+          code, language, framework, title, selectedModules: backendModules 
+        });
+        navigate(`/review/${res.data.review.id}`);
+        return;
       }
       
       // ✨ Success! Redirect them to the shiny new Review Results page!
@@ -340,309 +381,370 @@ export default function SubmitReviewPage() {
               required
             />
           </div>
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="w-full sm:w-64">
+          {tab !== 'github' && (
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="w-full sm:w-64">
               <label className="label">Programming Language <span className="text-red-400">*</span></label>
-              <Select
-                id="submit-language"
-                value={LANGUAGES.find(l => l.value === language)}
-                isSearchable={true}
-                formatOptionLabel={(option) => (
-                  <div className="flex items-center gap-2">
-                    {option.icon ? (
-                      <img 
-                        src={option.icon} 
-                        alt={option.label} 
-                        className="w-4 h-4 object-contain" 
-                        style={option.value === 'rust' ? { filter: 'invert(1)' } : {}}
-                      />
-                    ) : (
-                      <FileCode className="w-4 h-4 text-slate-400" />
-                    )}
-                    <span>{option.label}</span>
-                  </div>
-                )}
-                onChange={(selectedOption) => {
-                  const newLanguage = selectedOption.value;
-                  
-                  const getSnippet = (fw, lang) => {
-                    if (fw === 'none') return EXAMPLE_SNIPPETS[lang];
-                    return EXAMPLE_SNIPPETS[`${fw}_${lang}`] || EXAMPLE_SNIPPETS[fw] || EXAMPLE_SNIPPETS[lang];
-                  };
-                  
-                  const currentSnippet = getSnippet(framework, language);
-                  
-                  if (code === currentSnippet || !code) {
-                    setCode(getSnippet(framework, newLanguage) || '');
+              {(
+                <Select
+                  id="submit-language"
+                  value={LANGUAGES.find(l => l.value === language)}
+                  isSearchable={true}
+                  formatOptionLabel={(option) => (
+                    <div className="flex items-center gap-2">
+                      {option.icon ? (
+                        <img 
+                          src={option.icon} 
+                          alt={option.label} 
+                          className="w-4 h-4 object-contain" 
+                          style={['rust', 'json', 'markdown', 'shell', 'powershell', 'xml', 'groovy', 'objective-c'].includes(option.value) ? { filter: 'invert(1)' } : {}}
+                        />
+                      ) : (
+                        <FileCode className="w-4 h-4 text-slate-400" />
+                      )}
+                      <span>{option.label}</span>
+                    </div>
+                  )}
+                  onChange={(selectedOption) => {
+                    const newLanguage = selectedOption.value;
+                    
+                    const getSnippet = (fw, lang) => {
+                      if (fw === 'none') return EXAMPLE_SNIPPETS[lang];
+                      return EXAMPLE_SNIPPETS[`${fw}_${lang}`] || EXAMPLE_SNIPPETS[fw] || EXAMPLE_SNIPPETS[lang];
+                    };
+                    
+                    const currentSnippet = getSnippet(framework, language);
+                    
+                    if (codeRef.current === currentSnippet || !codeRef.current) {
+                      setCode(getSnippet(framework, newLanguage) || '');
+                    }
+                    
+                    setLanguage(newLanguage);
+                  }}
+                  options={
+                    framework !== 'none' && FRAMEWORK_TO_LANGUAGE[framework]
+                      ? LANGUAGES.filter(l => FRAMEWORK_TO_LANGUAGE[framework].includes(l.value))
+                      : LANGUAGES
                   }
-                  
-                  setLanguage(newLanguage);
-                }}
-                options={
-                  framework !== 'none' && FRAMEWORK_TO_LANGUAGE[framework]
-                    ? LANGUAGES.filter(l => FRAMEWORK_TO_LANGUAGE[framework].includes(l.value))
-                    : LANGUAGES
-                }
-                styles={{
-                  control: (base, state) => ({
-                    ...base,
-                    cursor: 'pointer',
-                    backgroundColor: 'var(--color-surface-800)',
-                    borderColor: state.isFocused ? 'var(--color-brand-500)' : 'var(--color-surface-700)',
-                    borderRadius: '0.75rem',
-                    padding: '0.1rem 0.25rem',
-                    boxShadow: state.isFocused ? '0 0 0 2px rgba(99, 102, 241, 0.3)' : 'none',
-                    '&:hover': {
-                      borderColor: state.isFocused ? 'var(--color-brand-500)' : '#475569'
-                    },
-                    transition: 'border-color 0.2s, box-shadow 0.2s, background-color 0.2s'
-                  }),
-                  menu: (base) => ({
-                    ...base,
-                    backgroundColor: 'var(--color-surface-800)',
-                    border: '1px solid var(--color-surface-700)',
-                    borderRadius: '0.75rem',
-                    overflow: 'hidden',
-                    zIndex: 50,
-                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)'
-                  }),
-                  menuList: (base) => ({
-                    ...base,
-                    padding: '4px'
-                  }),
-                  option: (base, state) => ({
-                    ...base,
-                    backgroundColor: state.isSelected 
-                      ? 'var(--color-brand-600)' 
-                      : state.isFocused 
-                        ? 'var(--color-surface-700)' 
-                        : 'transparent',
-                    color: state.isSelected || state.isFocused ? '#f1f5f9' : '#cbd5e1',
-                    cursor: 'pointer',
-                    borderRadius: '0.5rem',
-                    '&:active': {
-                      backgroundColor: 'var(--color-brand-500)',
-                    }
-                  }),
-                  singleValue: (base) => ({
-                    ...base,
-                    color: '#f1f5f9',
-                    fontSize: '0.875rem'
-                  }),
-                  input: (base) => ({
-                    ...base,
-                    color: '#f1f5f9'
-                  }),
-                  indicatorSeparator: (base) => ({
-                    ...base,
-                    backgroundColor: 'var(--color-surface-700)'
-                  }),
-                  dropdownIndicator: (base) => ({
-                    ...base,
-                    color: '#94a3b8',
-                    '&:hover': {
-                      color: '#cbd5e1'
-                    }
-                  })
-                }}
-              />
+                  styles={{
+                    control: (base, state) => ({
+                      ...base,
+                      cursor: 'pointer',
+                      backgroundColor: 'var(--color-surface-800)',
+                      borderColor: state.isFocused ? 'var(--color-brand-500)' : 'var(--color-surface-700)',
+                      borderRadius: '0.75rem',
+                      padding: '0.1rem 0.25rem',
+                      boxShadow: state.isFocused ? '0 0 0 2px rgba(99, 102, 241, 0.3)' : 'none',
+                      '&:hover': {
+                        borderColor: state.isFocused ? 'var(--color-brand-500)' : '#475569'
+                      },
+                      transition: 'border-color 0.2s, box-shadow 0.2s, background-color 0.2s'
+                    }),
+                    menu: (base) => ({
+                      ...base,
+                      backgroundColor: 'var(--color-surface-800)',
+                      border: '1px solid var(--color-surface-700)',
+                      borderRadius: '0.75rem',
+                      overflow: 'hidden',
+                      zIndex: 50,
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)'
+                    }),
+                    menuList: (base) => ({
+                      ...base,
+                      padding: '4px'
+                    }),
+                    option: (base, state) => ({
+                      ...base,
+                      backgroundColor: state.isSelected 
+                        ? 'var(--color-brand-600)' 
+                        : state.isFocused 
+                          ? 'var(--color-surface-700)' 
+                          : 'transparent',
+                      color: state.isSelected || state.isFocused ? '#f1f5f9' : '#cbd5e1',
+                      cursor: 'pointer',
+                      borderRadius: '0.5rem',
+                      '&:active': {
+                        backgroundColor: 'var(--color-brand-500)',
+                      }
+                    }),
+                    singleValue: (base) => ({
+                      ...base,
+                      color: '#f1f5f9',
+                      fontSize: '0.875rem'
+                    }),
+                    input: (base) => ({
+                      ...base,
+                      color: '#f1f5f9'
+                    }),
+                    indicatorSeparator: (base) => ({
+                      ...base,
+                      backgroundColor: 'var(--color-surface-700)'
+                    }),
+                    dropdownIndicator: (base) => ({
+                      ...base,
+                      color: '#94a3b8',
+                      '&:hover': {
+                        color: '#cbd5e1'
+                      }
+                    })
+                  }}
+                />
+              )}
             </div>
             <div className="w-full sm:w-64">
               <label className="label">Framework <span className="text-slate-500 text-xs font-normal ml-1">(Optional)</span></label>
-              <Select
-                id="submit-framework"
-                value={FRAMEWORKS.find(f => f.value === framework)}
-                isSearchable={true}
-                formatOptionLabel={(option) => (
-                  <div className="flex items-center gap-2">
-                    {option.icon ? (
-                      <img 
-                        src={option.icon} 
-                        alt={option.label} 
-                        className="w-4 h-4 object-contain"
-                        style={
-                          ['nextjs', 'express', 'flask', 'symfony'].includes(option.value) 
-                            ? { filter: 'invert(1)' } 
-                            : {}
-                        }
-                      />
-                    ) : (
-                      <FileCode className="w-4 h-4 text-slate-400" />
-                    )}
-                    <span>{option.label}</span>
-                  </div>
-                )}
-                onChange={(selectedOption) => {
-                  const newFramework = selectedOption.value;
-                  
-                  // Helper to get the correct snippet for a framework + language combo
-                  const getSnippet = (fw, lang) => {
-                    if (fw === 'none') return EXAMPLE_SNIPPETS[lang];
-                    return EXAMPLE_SNIPPETS[`${fw}_${lang}`] || EXAMPLE_SNIPPETS[fw] || EXAMPLE_SNIPPETS[lang];
-                  };
-                  
-                  const currentSnippet = getSnippet(framework, language);
-                  
-                  let newLanguage = language;
-                  
-                  // Auto-switch language if current language is not supported by the new framework
-                  const supportedLangs = FRAMEWORK_TO_LANGUAGE[newFramework];
-                  if (newFramework !== 'none' && supportedLangs) {
-                    if (!supportedLangs.includes(language)) {
-                      newLanguage = supportedLangs[0]; // Default to the primary supported language
-                      setLanguage(newLanguage);
+              {(
+                <Select
+                  id="submit-framework"
+                  value={FRAMEWORKS.find(f => f.value === framework)}
+                  isSearchable={true}
+                  formatOptionLabel={(option) => (
+                    <div className="flex items-center gap-2">
+                      {option.icon ? (
+                        <img 
+                          src={option.icon} 
+                          alt={option.label} 
+                          className="w-4 h-4 object-contain"
+                          style={
+                            ['nextjs', 'express', 'flask', 'symfony', 'django'].includes(option.value) 
+                              ? { filter: 'invert(1)' } 
+                              : {}
+                          }
+                        />
+                      ) : (
+                        <FileCode className="w-4 h-4 text-slate-400" />
+                      )}
+                      <span>{option.label}</span>
+                    </div>
+                  )}
+                  onChange={(selectedOption) => {
+                    const newFramework = selectedOption.value;
+                    
+                    // Helper to get the correct snippet for a framework + language combo
+                    const getSnippet = (fw, lang) => {
+                      if (fw === 'none') return EXAMPLE_SNIPPETS[lang];
+                      return EXAMPLE_SNIPPETS[`${fw}_${lang}`] || EXAMPLE_SNIPPETS[fw] || EXAMPLE_SNIPPETS[lang];
+                    };
+                    
+                    const currentSnippet = getSnippet(framework, language);
+                    
+                    let newLanguage = language;
+                    
+                    // Auto-switch language if current language is not supported by the new framework
+                    const supportedLangs = FRAMEWORK_TO_LANGUAGE[newFramework];
+                    if (newFramework !== 'none' && supportedLangs) {
+                      if (!supportedLangs.includes(language)) {
+                        newLanguage = supportedLangs[0]; // Default to the primary supported language
+                        setLanguage(newLanguage);
+                      }
                     }
-                  }
-                  
-                  // Swap snippet if they had the default one loaded
-                  if (code === currentSnippet || !code) {
-                     setCode(getSnippet(newFramework, newLanguage) || '');
-                  }
-                  
-                  setFramework(newFramework);
-                }}
-                options={FRAMEWORKS}
-                styles={{
-                  control: (base, state) => ({
-                    ...base,
-                    cursor: 'pointer',
-                    backgroundColor: 'var(--color-surface-800)',
-                    borderColor: state.isFocused ? 'var(--color-brand-500)' : 'var(--color-surface-700)',
-                    borderRadius: '0.75rem',
-                    padding: '0.1rem 0.25rem',
-                    boxShadow: state.isFocused ? '0 0 0 2px rgba(99, 102, 241, 0.3)' : 'none',
-                    '&:hover': {
-                      borderColor: state.isFocused ? 'var(--color-brand-500)' : '#475569'
-                    },
-                    transition: 'border-color 0.2s, box-shadow 0.2s, background-color 0.2s'
-                  }),
-                  menu: (base) => ({
-                    ...base,
-                    backgroundColor: 'var(--color-surface-800)',
-                    border: '1px solid var(--color-surface-700)',
-                    borderRadius: '0.75rem',
-                    overflow: 'hidden',
-                    zIndex: 50,
-                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)'
-                  }),
-                  menuList: (base) => ({
-                    ...base,
-                    padding: '4px'
-                  }),
-                  option: (base, state) => ({
-                    ...base,
-                    backgroundColor: state.isSelected 
-                      ? 'var(--color-brand-600)' 
-                      : state.isFocused 
-                        ? 'var(--color-surface-700)' 
-                        : 'transparent',
-                    color: state.isSelected || state.isFocused ? '#f1f5f9' : '#cbd5e1',
-                    cursor: 'pointer',
-                    borderRadius: '0.5rem',
-                    '&:active': {
-                      backgroundColor: 'var(--color-brand-500)',
+                    
+                    // Swap snippet if they had the default one loaded
+                    if (codeRef.current === currentSnippet || !codeRef.current) {
+                       setCode(getSnippet(newFramework, newLanguage) || '');
                     }
-                  }),
-                  singleValue: (base) => ({
-                    ...base,
-                    color: '#f1f5f9',
-                    fontSize: '0.875rem'
-                  }),
-                  input: (base) => ({
-                    ...base,
-                    color: '#f1f5f9'
-                  }),
-                  indicatorSeparator: (base) => ({
-                    ...base,
-                    backgroundColor: 'var(--color-surface-700)'
-                  }),
-                  dropdownIndicator: (base) => ({
-                    ...base,
-                    color: '#94a3b8',
-                    '&:hover': {
-                      color: '#cbd5e1'
-                    }
-                  })
-                }}
-              />
+                    
+                    setFramework(newFramework);
+                  }}
+                  options={FRAMEWORKS}
+                  styles={{
+                    control: (base, state) => ({
+                      ...base,
+                      cursor: 'pointer',
+                      backgroundColor: 'var(--color-surface-800)',
+                      borderColor: state.isFocused ? 'var(--color-brand-500)' : 'var(--color-surface-700)',
+                      borderRadius: '0.75rem',
+                      padding: '0.1rem 0.25rem',
+                      boxShadow: state.isFocused ? '0 0 0 2px rgba(99, 102, 241, 0.3)' : 'none',
+                      '&:hover': {
+                        borderColor: state.isFocused ? 'var(--color-brand-500)' : '#475569'
+                      },
+                      transition: 'border-color 0.2s, box-shadow 0.2s, background-color 0.2s'
+                    }),
+                    menu: (base) => ({
+                      ...base,
+                      backgroundColor: 'var(--color-surface-800)',
+                      border: '1px solid var(--color-surface-700)',
+                      borderRadius: '0.75rem',
+                      overflow: 'hidden',
+                      zIndex: 50,
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)'
+                    }),
+                    menuList: (base) => ({
+                      ...base,
+                      padding: '4px'
+                    }),
+                    option: (base, state) => ({
+                      ...base,
+                      backgroundColor: state.isSelected 
+                        ? 'var(--color-brand-600)' 
+                        : state.isFocused 
+                          ? 'var(--color-surface-700)' 
+                          : 'transparent',
+                      color: state.isSelected || state.isFocused ? '#f1f5f9' : '#cbd5e1',
+                      cursor: 'pointer',
+                      borderRadius: '0.5rem',
+                      '&:active': {
+                        backgroundColor: 'var(--color-brand-500)',
+                      }
+                    }),
+                    singleValue: (base) => ({
+                      ...base,
+                      color: '#f1f5f9',
+                      fontSize: '0.875rem'
+                    }),
+                    input: (base) => ({
+                      ...base,
+                      color: '#f1f5f9'
+                    }),
+                    indicatorSeparator: (base) => ({
+                      ...base,
+                      backgroundColor: 'var(--color-surface-700)'
+                    }),
+                    dropdownIndicator: (base) => ({
+                      ...base,
+                      color: '#94a3b8',
+                      '&:hover': {
+                        color: '#cbd5e1'
+                      }
+                    })
+                  }}
+                />
+              )}
             </div>
           </div>
+          )}
         </div>
 
         {/* Source tabs */}
         <div className="card space-y-4">
-          <div className="flex items-center justify-between pb-4 border-b border-surface-800">
-            <div className="flex gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-surface-800">
+            <div className="flex gap-2 overflow-x-auto scrollbar-hide">
             <button
               type="button"
               id="tab-snippet"
-              className={`tab-btn ${tab === 'snippet' ? 'active' : ''}`}
+              className={`tab-btn flex-shrink-0 ${tab === 'snippet' ? 'active' : ''}`}
               onClick={() => setTab('snippet')}
             >
-              <Code2 className="w-4 h-4 inline mr-2" />
-              Paste Snippet
+              <Code2 className="w-4 h-4 inline mr-1.5" />
+              <span className="hidden sm:inline">Paste </span>Snippet
             </button>
             <button
               type="button"
               id="tab-file"
-              className={`tab-btn ${tab === 'file' ? 'active' : ''}`}
+              className={`tab-btn flex-shrink-0 ${tab === 'file' ? 'active' : ''}`}
               onClick={() => setTab('file')}
             >
-              <Upload className="w-4 h-4 inline mr-2" />
-              Upload File
+              <Upload className="w-4 h-4 inline mr-1.5" />
+              <span className="hidden sm:inline">Upload </span>File
+            </button>
+            <button
+              type="button"
+              id="tab-github"
+              className={`tab-btn flex-shrink-0 ${tab === 'github' ? 'active' : ''}`}
+              onClick={() => setTab('github')}
+            >
+              <GitBranch className="w-4 h-4 inline mr-1.5" />
+              GitHub
+              <span className={`ml-2 hidden sm:inline-block text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider transition-colors ${tab === 'github' ? 'bg-white/20 text-white border-white/30' : 'bg-brand-500/20 text-brand-400 border-brand-500/30'}`}>
+                Recommended
+              </span>
             </button>
             </div>
             
             {/* Active Language & Framework Badges */}
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2.5 px-4 py-2 bg-surface-900 border border-surface-700/50 rounded-xl shadow-inner">
+            {tab !== 'github' && (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-900 border border-surface-700/50 rounded-xl shadow-inner">
                 <img 
                   src={LANGUAGES.find(l => l.value === language)?.icon} 
                   alt={language}
-                  className="w-5 h-5 object-contain drop-shadow-sm"
+                  className="w-4 h-4 object-contain drop-shadow-sm"
                   style={language === 'rust' ? { filter: 'invert(1)' } : {}}
                 />
-                <span className="font-semibold text-slate-200 tracking-wide">{LANGUAGES.find(l => l.value === language)?.label}</span>
+                <span className="font-semibold text-slate-200 text-sm tracking-wide">{LANGUAGES.find(l => l.value === language)?.label}</span>
               </div>
               
               {framework !== 'none' && (
-                <div className="flex items-center gap-2.5 px-4 py-2 bg-surface-900 border border-surface-700/50 rounded-xl shadow-inner">
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-900 border border-surface-700/50 rounded-xl shadow-inner">
                   <img 
                     src={FRAMEWORKS.find(f => f.value === framework)?.icon} 
                     alt={framework}
-                    className="w-5 h-5 object-contain drop-shadow-sm"
+                    className="w-4 h-4 object-contain drop-shadow-sm"
                     style={['nextjs', 'express', 'flask', 'symfony'].includes(framework) ? { filter: 'invert(1)' } : {}}
                   />
-                  <span className="font-semibold text-slate-200 tracking-wide">{FRAMEWORKS.find(f => f.value === framework)?.label}</span>
+                  <span className="font-semibold text-slate-200 text-sm tracking-wide">{FRAMEWORKS.find(f => f.value === framework)?.label}</span>
                 </div>
               )}
             </div>
+            )}
           </div>
 
           {tab === 'snippet' ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <label className="label mb-0">Code <span className="text-red-400">*</span></label>
-                <button
-                  type="button"
-                  className="px-3 py-1.5 text-xs font-medium bg-surface-700 text-slate-200 hover:text-white hover:bg-brand-600 hover:border-brand-500 rounded-lg transition-all border border-surface-600 flex items-center gap-1.5 shadow-sm"
-                  onClick={() => {
-                    const snippetKey = framework !== 'none' ? `${framework}_${language}` : language;
-                    const snippet = EXAMPLE_SNIPPETS[snippetKey] || EXAMPLE_SNIPPETS[framework] || EXAMPLE_SNIPPETS[language] || EXAMPLE_SNIPPETS.javascript;
-                    setCode(snippet);
-                  }}
-                >
-                  <Code2 className="w-3.5 h-3.5" />
-                  Load Example
-                </button>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {/* Font size controls */}
+                  <div className="flex items-center gap-0 bg-surface-900 border border-surface-700/50 rounded-lg overflow-hidden shrink-0">
+                    <button
+                      type="button"
+                      className="px-2.5 py-1.5 text-sm font-bold text-slate-300 hover:text-white hover:bg-surface-800 transition-colors cursor-pointer"
+                      onClick={() => changeEditorFontSize(-1)}
+                      title="Decrease font size"
+                    >A-</button>
+                    <span className="text-[10px] text-slate-300 px-1.5 select-none tabular-nums">{Math.round(editorFontSize)}px</span>
+                    <button
+                      type="button"
+                      className="px-2.5 py-1.5 text-sm font-bold text-slate-300 hover:text-white hover:bg-surface-800 transition-colors cursor-pointer"
+                      onClick={() => changeEditorFontSize(1)}
+                      title="Increase font size"
+                    >A+</button>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setWordWrap(!wordWrap)} 
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border flex items-center gap-1.5 shadow-sm shrink-0 ${wordWrap ? 'bg-brand-600 text-white border-brand-500 hover:bg-brand-500' : 'bg-surface-700 text-slate-200 border-surface-600 hover:text-white hover:bg-surface-600'}`}
+                    title="Toggle Word Wrap"
+                  >
+                    Wrap
+                  </button>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 text-xs font-medium bg-surface-700 text-slate-200 hover:text-white hover:bg-brand-600 hover:border-brand-500 rounded-lg transition-all border border-surface-600 flex items-center gap-1.5 shadow-sm shrink-0"
+                    onClick={() => {
+                      const snippetKey = framework !== 'none' ? `${framework}_${language}` : language;
+                      const snippet = EXAMPLE_SNIPPETS[snippetKey] || EXAMPLE_SNIPPETS[framework] || EXAMPLE_SNIPPETS[language] || EXAMPLE_SNIPPETS.javascript;
+                      setCode(snippet);
+                    }}
+                  >
+                    <Code2 className="w-3.5 h-3.5" />
+                    Load Example
+                  </button>
+                </div>
               </div>
-              <div className="rounded-xl overflow-hidden border border-surface-700" style={{ height: '400px' }}>
+              <div
+                className="rounded-xl overflow-hidden border-2 border-slate-600"
+                style={{ height: '360px', touchAction: 'pan-x pan-y' }}
+              >
                 <Editor
-                  height="400px"
+                  height="360px"
                   language={language === 'cpp' ? 'cpp' : language === 'csharp' ? 'csharp' : language}
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   theme="hc-black"
+                  onMount={(editor, monaco) => {
+                    editorInstanceRef.current = editor;
+                    const cleanupTouch = setupMonacoTouch(editor, monaco, setEditorFontSize);
+                    editor.onDidDispose(() => {
+                      cleanupTouch();
+                    });
+                    // Keep px indicator in sync
+                    editor.onDidChangeConfiguration(() => {
+                      const size = editor.getOption(monaco.editor.EditorOption.fontSize);
+                      setEditorFontSize(Math.round(size));
+                    });
+                  }}
                   beforeMount={(monaco) => {
                     monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
                       noSemanticValidation: true,
@@ -655,11 +757,15 @@ export default function SubmitReviewPage() {
                   }}
                   options={{
                     minimap: { enabled: false },
-                    fontSize: 14,
+                    fontSize: editorFontSize,
                     lineNumbers: 'on',
                     scrollBeyondLastLine: false,
                     automaticLayout: true,
-                    mouseWheelZoom: true,
+                    mouseWheelZoom: false,
+                    wordWrap: wordWrap ? 'on' : 'off',
+                    renderLineHighlight: 'none',
+                    overviewRulerBorder: false,
+                    fixedOverflowWidgets: true,
                     padding: { top: 16, bottom: 16 },
                     fontFamily: 'JetBrains Mono, Fira Code, monospace',
                   }}
@@ -668,8 +774,9 @@ export default function SubmitReviewPage() {
               {code && (
                 <p className="text-xs text-slate-500">{code.split('\n').length} lines · {code.length} characters</p>
               )}
+              <p className="text-xs text-slate-600 sm:hidden text-center">Pinch to zoom · A+ / A− to resize</p>
             </div>
-          ) : (
+          ) : tab === 'file' ? (
             <div>
               <label className="label">Source File <span className="text-red-400">*</span></label>
               {file ? (
@@ -697,12 +804,94 @@ export default function SubmitReviewPage() {
                   <p className="text-slate-500 text-sm">or click to browse</p>
                   <p className="text-slate-600 text-xs mt-3">JS, TS, Python, Java, C, C++, C#, PHP, Ruby, Go, Rust · Max 5MB</p>
                   <input id="file-input" type="file" className="hidden"
-                    accept=".js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.cs,.php,.rb,.go,.rs"
+                    accept=".js,.jsx,.ts,.tsx,.py,.java,.c,.cpp,.h,.cs,.php,.rb,.go,.rs,.zip"
                     onChange={(e) => handleFileChange(e.target.files[0])} />
                 </div>
               )}
             </div>
+          ) : (
+            <div>
+              <label className="label">GitHub Repository URL <span className="text-red-400">*</span></label>
+              <div className="flex flex-col gap-2">
+                <textarea
+                  className="input font-mono text-sm resize-none overflow-hidden leading-relaxed"
+                  placeholder="https://github.com/facebook/react"
+                  value={githubUrl}
+                  rows={1}
+                  onChange={(e) => {
+                    setGithubUrl(e.target.value);
+                    // Auto-grow: reset height then set to scrollHeight
+                    e.target.style.height = 'auto';
+                    e.target.style.height = e.target.scrollHeight + 'px';
+                  }}
+                  style={{ transition: 'height 0.2s ease' }}
+                  disabled={loading}
+                />
+                <p className="text-xs text-slate-500">
+                  Must be a public repository. We will download the default branch and analyze the source code.
+                </p>
+              </div>
+            </div>
           )}
+        </div>
+        
+        {/* AI Modules Selection */}
+        <div className="bg-surface-800 border border-surface-700 rounded-xl p-5 mb-8">
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold text-white">AI Analysis Modules</h3>
+            <p className="text-xs text-slate-400 mt-1">
+              Select which AI modules to run now. You can always run skipped modules later from the review page.
+            </p>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { id: 'static', label: 'Static Code Analysis', desc: 'Syntax, linting & basic checks' },
+              { id: 'aiReview', label: 'AI Code Review', desc: 'Bugs, smells, suggestions' },
+              { id: 'bigO', label: 'Complexity Analysis', desc: 'Big-O time & space complexity' },
+              { id: 'documentation', label: 'Generate Documentation', desc: 'Generate docstrings & markdown' }
+            ].map(mod => {
+              const isStatic = mod.id === 'static';
+              const isChecked = isStatic || selectedModules.includes(mod.id);
+              return (
+                <label 
+                  key={mod.id}
+                  className={`
+                    flex flex-col p-3 rounded-lg border transition-all duration-200
+                    ${isStatic ? 'opacity-70 cursor-not-allowed bg-brand-500/5 border-brand-500/30' : 'cursor-pointer'}
+                    ${!isStatic && isChecked 
+                      ? 'bg-brand-500/10 border-brand-500/50' 
+                      : !isStatic ? 'bg-surface-900 border-surface-700 hover:border-surface-600' : ''
+                    }
+                  `}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <input 
+                      type="checkbox" 
+                      className={`w-4 h-4 text-brand-500 bg-surface-950 border-surface-600 rounded focus:ring-brand-500 focus:ring-offset-surface-800 ${isStatic ? 'cursor-not-allowed' : ''}`}
+                      checked={isChecked}
+                      disabled={isStatic}
+                      onChange={(e) => {
+                        if (isStatic) return;
+                        if (e.target.checked) {
+                          setSelectedModules(prev => [...prev, mod.id]);
+                        } else {
+                          // Ensure at least one module is selected? Nah, let them skip all AI if they just want static analysis!
+                          setSelectedModules(prev => prev.filter(id => id !== mod.id));
+                        }
+                      }}
+                    />
+                    <span className={`text-sm font-medium ${isChecked ? 'text-brand-300' : 'text-slate-300'}`}>
+                      {mod.label}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 pl-6 leading-tight">
+                    {mod.desc}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </div>
 
         {/* Submit */}
@@ -724,6 +913,24 @@ export default function SubmitReviewPage() {
           </button>
         </div>
       </form>
+
+      {/* Full Screen Buffering Animation */}
+      {loading && (
+        <div className="fixed inset-0 z-[100] bg-surface-950/80 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in">
+          <div className="relative flex items-center justify-center w-28 h-28 mb-8">
+            <div className="absolute inset-0 rounded-full border-[3px] border-surface-800" />
+            <div className="absolute inset-0 rounded-full border-[3px] border-brand-500 border-r-transparent border-t-transparent animate-spin shadow-[0_0_20px_rgba(124,92,255,0.4)]" style={{ animationDuration: '1s' }} />
+            <div className="absolute inset-2 rounded-full border-[3px] border-emerald-500 border-l-transparent border-b-transparent animate-spin-reverse shadow-[0_0_15px_rgba(16,185,129,0.3)]" style={{ animationDuration: '1.5s' }} />
+            <Zap className="w-8 h-8 text-brand-400 animate-pulse drop-shadow-[0_0_10px_rgba(124,92,255,0.8)]" />
+          </div>
+          <h2 className="text-2xl font-bold text-white mb-2">Preparing Analysis</h2>
+          <p className="text-slate-400 text-sm animate-pulse">Uploading data to server...</p>
+          <style>{`
+            .animate-spin-reverse { animation: spin-reverse linear infinite; }
+            @keyframes spin-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+          `}</style>
+        </div>
+      )}
     </div>
   );
 }

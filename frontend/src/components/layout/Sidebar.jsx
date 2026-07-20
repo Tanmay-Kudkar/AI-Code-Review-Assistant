@@ -97,8 +97,7 @@ export default function Sidebar({ open, onClose }) {
                     : user.name
                 ) : ''}
               </p>
-              <p className="text-[10px] text-brand-300 font-bold mt-0.5 mb-1.5 uppercase tracking-wider">Premium User</p>
-              <NavLink to="/profile" onClick={onClose} className="inline-flex items-center text-xs text-slate-400 hover:text-brand-300 transition-colors font-medium group cursor-pointer">
+              <NavLink to="/profile" onClick={onClose} className="inline-flex items-center text-xs text-slate-400 hover:text-brand-300 transition-colors font-medium group cursor-pointer mt-1">
                 View Profile <ChevronRight className="w-3.5 h-3.5 ml-0.5 group-hover:translate-x-0.5 transition-transform" />
               </NavLink>
             </div>

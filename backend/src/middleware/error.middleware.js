@@ -2,9 +2,12 @@
  * Global error handling middleware for Express.
  */
 const errorHandler = (err, req, res, next) => {
-  console.error('[ERROR]', err.message);
-  if (process.env.NODE_ENV === 'development') {
-    console.error(err.stack);
+  // Don't clutter the console with expected JWT expiration stack traces
+  if (err.name !== 'TokenExpiredError') {
+    console.error('[ERROR]', err.message);
+    if (process.env.NODE_ENV === 'development') {
+      console.error(err.stack);
+    }
   }
 
   // Zod validation errors

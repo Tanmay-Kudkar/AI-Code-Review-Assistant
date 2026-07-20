@@ -36,13 +36,18 @@ const LangBadge = ({ lang }) => (
   </span>
 );
 
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useLockBodyScroll } from '../hooks/useLockBodyScroll';
+
 export default function DashboardPage() {
+  useDocumentTitle('Dashboard');
   const { user } = useAuth();
   const navigate = useNavigate();
   const [reviews, setReviews] = useState([]);
   const [pagination, setPagination] = useState({ total: 0, pages: 1, page: 1 });
   const [loading, setLoading] = useState(true);
   const [deleteId, setDeleteId] = useState(null);
+  useLockBodyScroll(!!deleteId);
   const [filters, setFilters] = useState({ search: '', language: '', status: '', page: 1 });
 
   const fetchReviews = useCallback(async () => {
@@ -50,7 +55,7 @@ export default function DashboardPage() {
     try {
       const { data } = await reviewsApi.list({
         ...filters,
-        limit: 10,
+        limit: 6,
       });
       setReviews(data.reviews);
       setPagination(data.pagination);
@@ -231,28 +236,19 @@ export default function DashboardPage() {
       {/* Reviews Table */}
       <div className="card p-0 overflow-hidden">
         {loading ? (
-          <div className="w-full">
-            <div className="border-b border-surface-800 px-6 py-4 flex gap-4">
-              <Skeleton className="h-4 w-32" />
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-4 w-24" />
+          <div className="flex flex-col items-center justify-center py-24 text-center px-4">
+            <div className="relative flex items-center justify-center w-16 h-16 mb-6">
+              <div className="absolute inset-0 rounded-full border-4 border-surface-800" />
+              <div className="absolute inset-0 rounded-full border-4 border-brand-500 border-r-transparent animate-spin" style={{ animationDuration: '1s' }} />
+              <div className="absolute inset-1 rounded-full border-4 border-emerald-500 border-l-transparent animate-spin-reverse" style={{ animationDuration: '1.5s' }} />
+              <Code2 className="w-5 h-5 text-brand-400 animate-pulse" />
             </div>
-            <div className="divide-y divide-surface-800">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="px-6 py-4 flex items-center justify-between">
-                  <div className="flex gap-4 items-center w-full">
-                    <div className="space-y-2 flex-1 max-w-xs">
-                      <Skeleton className="h-4 w-full" />
-                      <Skeleton className="h-3 w-16" />
-                    </div>
-                    <Skeleton className="h-6 w-24 rounded-full" />
-                    <Skeleton className="h-6 w-24 rounded-full" />
-                    <Skeleton className="h-4 w-12" />
-                    <Skeleton className="h-4 w-20" />
-                  </div>
-                </div>
-              ))}
-            </div>
+            <h3 className="text-white font-semibold text-lg mb-2">Loading Dashboard</h3>
+            <p className="text-slate-500 text-sm animate-pulse">Syncing your code reviews...</p>
+            <style>{`
+              .animate-spin-reverse { animation: spin-reverse linear infinite; }
+              @keyframes spin-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+            `}</style>
           </div>
         ) : reviews.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center px-4">
@@ -265,7 +261,43 @@ export default function DashboardPage() {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto">
+            {/* Mobile card list */}
+            <div className="md:hidden divide-y divide-surface-800">
+              {reviews.map((r) => (
+                <div
+                  key={r.id}
+                  className="p-4 hover:bg-surface-800/50 transition-colors cursor-pointer"
+                  onClick={() => navigate(`/reviews/${r.id}`)}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-white truncate">{r.title}</p>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        <LangBadge lang={r.language} />
+                        <StatusBadge status={r.status} />
+                        {r.staticResult?.summary && (
+                          <span className="text-xs text-slate-500">
+                            <span className="text-red-400 font-medium">{r.staticResult.summary.errors}E</span>
+                            {' '}
+                            <span className="text-amber-400 font-medium">{r.staticResult.summary.warnings}W</span>
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">{format(new Date(r.createdAt), 'MMM d, yyyy')}</p>
+                    </div>
+                    <button
+                      className="btn-danger p-2 flex-shrink-0"
+                      onClick={(e) => { e.stopPropagation(); setDeleteId(r.id); }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop table */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-surface-800">
@@ -322,7 +354,7 @@ export default function DashboardPage() {
             {pagination.pages > 1 && (
               <div className="flex items-center justify-between px-6 py-4 border-t border-surface-800">
                 <p className="text-xs text-slate-500">
-                  Showing {(pagination.page - 1) * 10 + 1}–{Math.min(pagination.page * 10, pagination.total)} of {pagination.total}
+                  Showing {(pagination.page - 1) * 6 + 1}–{Math.min(pagination.page * 6, pagination.total)} of {pagination.total}
                 </p>
                 <div className="flex gap-2">
                   <button

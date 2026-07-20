@@ -13,6 +13,8 @@ datasource db {
 enum SourceType {
   SNIPPET
   FILE
+  PROJECT
+  GITHUB
 }
 
 enum ReviewStatus {
@@ -52,6 +54,7 @@ model Review {
   sourceType   SourceType
   rawCode      String        @db.Text
   fileName     String?
+  repoUrl      String?
   status       ReviewStatus  @default(PENDING)
   errorMessage String?
   createdAt    DateTime      @default(now())

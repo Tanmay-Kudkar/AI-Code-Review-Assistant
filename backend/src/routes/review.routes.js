@@ -12,6 +12,7 @@ const {
   getComplexity,
   getAiSectionsStatus,
   retryReview,
+  generateFix,
 } = require('../controllers/review.controller');
 
 // All review routes require authentication
@@ -26,5 +27,6 @@ router.get('/:id/ai', getAiResult);
 router.get('/:id/ai/status', getAiSectionsStatus);
 router.get('/:id/complexity', getComplexity);
 router.post('/:id/retry', retryReview);
+router.post('/:id/fix', generateFix);
 
 module.exports = router;

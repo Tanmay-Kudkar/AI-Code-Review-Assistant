@@ -84,7 +84,7 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   }, []);
 
-  // 🎁 Wrap the entire app (children) in this provider so they can access the auth functions
+  // Wrap the entire app (children) in this provider so they can access the auth functions
   return (
     <AuthContext.Provider value={{ user, loading, login, register, logout, updateProfile }}>
       {children}
@@ -93,7 +93,7 @@ export const AuthProvider = ({ children }) => {
 };
 
 /**
- * 🪝 Custom Hook: useAuth
+ * Custom Hook: useAuth
  * 
  * Instead of writing `useContext(AuthContext)` everywhere, developers can just
  * write `const { user, login } = useAuth()` to magically access the global state!

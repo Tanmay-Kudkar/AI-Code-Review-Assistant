@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { User, Mail, Save, Loader } from 'lucide-react';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 export default function ProfilePage() {
+  useDocumentTitle('Profile Settings');
   const { user, updateProfile } = useAuth();
   const [form, setForm] = useState({ name: user?.name || '', avatar: user?.avatar || '' });
   const [loading, setLoading] = useState(false);
@@ -44,40 +46,42 @@ export default function ProfilePage() {
       </div>
 
       {/* Edit form */}
-      <form onSubmit={handleSubmit} className="card space-y-5">
-        <h2 className="font-semibold text-white">Edit Profile</h2>
+      <form onSubmit={handleSubmit} className="card">
+        <h2 className="font-semibold text-white mb-5">Edit Profile</h2>
 
-        <div>
-          <label className="label">Full Name</label>
-          <div className="relative">
-            <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              id="profile-name"
-              type="text"
-              className="input pl-10"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-            />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+          <div>
+            <label className="label">Full Name</label>
+            <div className="relative">
+              <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <input
+                id="profile-name"
+                type="text"
+                className="input pl-10"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Email</label>
+            <div className="relative">
+              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <input
+                type="email"
+                className="input pl-10 opacity-50 cursor-not-allowed"
+                value={user?.email}
+                disabled
+                title="Email cannot be changed"
+              />
+            </div>
+            <p className="text-xs text-slate-600 mt-1">Email address cannot be changed</p>
           </div>
         </div>
 
-        <div>
-          <label className="label">Email</label>
-          <div className="relative">
-            <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <input
-              type="email"
-              className="input pl-10 opacity-50 cursor-not-allowed"
-              value={user?.email}
-              disabled
-              title="Email cannot be changed"
-            />
-          </div>
-          <p className="text-xs text-slate-600 mt-1">Email address cannot be changed</p>
-        </div>
-
-        <div>
+        <div className="mb-6">
           <label className="label">Profile Picture <span className="text-slate-500 font-normal">(optional)</span></label>
           <input
             id="profile-avatar"

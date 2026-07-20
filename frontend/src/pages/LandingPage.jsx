@@ -21,8 +21,10 @@ const USE_CASES = [
   { icon: Users, title: 'Freelancers', desc: 'Improve the quality of client projects with automated reviews.', color: 'text-rose-400', bg: 'bg-rose-500/10 border-rose-500/20' },
   { icon: Building2, title: 'Small Teams', desc: 'Quick code reviews without a senior developer for every small change.', color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' },
 ];
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 export default function LandingPage() {
+  useDocumentTitle('Home');
   const navigate = useNavigate();
 
   return (
@@ -36,9 +38,9 @@ export default function LandingPage() {
             </div>
             <span className="font-bold text-white">AI Code Review</span>
           </div>
-          <div className="flex items-center gap-3">
-            <Link to="/login" className="btn-secondary py-2 text-sm">Sign In</Link>
-            <Link to="/register" className="btn-primary py-2 text-sm">Get Started Free</Link>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <Link to="/login" className="btn-secondary py-1.5 sm:py-2 px-3 sm:px-4 text-xs sm:text-sm whitespace-nowrap shrink-0">Sign In</Link>
+            <Link to="/register" className="btn-primary py-1.5 sm:py-2 px-3 sm:px-4 text-xs sm:text-sm whitespace-nowrap shrink-0">Get Started Free</Link>
           </div>
         </div>
       </nav>

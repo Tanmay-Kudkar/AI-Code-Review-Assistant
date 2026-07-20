@@ -69,7 +69,7 @@ const register = asyncHandler(async (req, res) => {
   // 2️⃣ Check if a user with this email already exists
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    return res.status(409).json({ error: 'Email already registered' });
+    return res.status(409).json({ details: [{ field: 'email', message: 'Email already registered' }] });
   }
 
   // 3️⃣ Securely hash the password before saving to the database
@@ -95,7 +95,7 @@ const register = asyncHandler(async (req, res) => {
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true, // Prevents XSS attacks
     secure: process.env.NODE_ENV === 'production', // Only send over HTTPS in production
-    sameSite: 'strict', // Prevents CSRF attacks
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict', // Allow cross-site cookies in production
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
@@ -115,13 +115,13 @@ const login = asyncHandler(async (req, res) => {
   // 2️⃣ Find the user by email
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) {
-    return res.status(401).json({ error: 'Invalid email or password' });
+    return res.status(401).json({ details: [{ field: 'email', message: 'User not found with this email' }] });
   }
 
   // 3️⃣ Verify the password against the stored hash
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
-    return res.status(401).json({ error: 'Invalid email or password' });
+    return res.status(401).json({ details: [{ field: 'password', message: 'Incorrect password' }] });
   }
 
   // 4️⃣ Generate tokens and save the session
@@ -139,7 +139,7 @@ const login = asyncHandler(async (req, res) => {
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
@@ -161,7 +161,11 @@ const logout = asyncHandler(async (req, res) => {
   }
   
   // 🍪 Clear the cookie from the user's browser
-  res.clearCookie('refreshToken');
+  res.clearCookie('refreshToken', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+  });
   res.json({ message: 'Logged out successfully' });
 });
 
@@ -200,7 +204,7 @@ const refresh = asyncHandler(async (req, res) => {
   res.cookie('refreshToken', newRefreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 

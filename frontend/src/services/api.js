@@ -3,6 +3,7 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   withCredentials: true,
+  timeout: 10000,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -27,10 +28,52 @@ const processQueue = (error, token = null) => {
   failedQueue = [];
 };
 
+// ─── Server Wakeup Queue ──────────────────────────────────────────────────────
+let isWakingUp = false;
+let wakeupQueue = [];
+
+const processWakeupQueue = () => {
+  wakeupQueue.forEach((prom) => {
+    prom.resolve();
+  });
+  wakeupQueue = [];
+};
+
+window.addEventListener('server-awake', () => {
+  isWakingUp = false;
+  processWakeupQueue();
+});
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
+
+    // Guard: network errors (server down, CORS, etc.) have no config — just reject
+    if (!originalRequest) {
+      return Promise.reject(error);
+    }
+
+    // Check if a request failed because Render is spinning up (Network Error, Timeout, or 502/503)
+    const isColdStartError = 
+      error.message === 'Network Error' || 
+      error.code === 'ECONNABORTED' ||
+      error.message.includes('timeout') ||
+      (error.response && (error.response.status === 502 || error.response.status === 503));
+
+    // If we're already waking up, or we just detected a cold start error
+    if ((isWakingUp || isColdStartError) && originalRequest.url !== '/' && !originalRequest._retryWakeup) {
+      if (!isWakingUp) {
+        isWakingUp = true;
+        window.dispatchEvent(new Event('server-wakeup-required'));
+      }
+      originalRequest._retryWakeup = true;
+      return new Promise((resolve) => {
+        wakeupQueue.push({ resolve });
+      }).then(() => {
+        return api(originalRequest);
+      });
+    }
 
     // Prevent infinite loop if the refresh token request itself fails with 401
     // Also skip refresh logic for login/register endpoints since 401 means invalid credentials there
@@ -92,14 +135,16 @@ export const reviewsApi = {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),
   submitSnippet: (data) => api.post('/reviews', data),
+  submitGithub: (data) => api.post('/reviews', data),
   list: (params) => api.get('/reviews', { params }),
   get: (id) => api.get(`/reviews/${id}`),
   delete: (id) => api.delete(`/reviews/${id}`),
   getStatic: (id) => api.get(`/reviews/${id}/static`),
   getAi: (id) => api.get(`/reviews/${id}/ai`),
   getComplexity: (id) => api.get(`/reviews/${id}/complexity`),
-  retry: (id) => api.post(`/reviews/${id}/retry`),
   getAiStatus: (id) => api.get(`/reviews/${id}/ai/status`),
+  retryAi: (id, section) => api.post(`/reviews/${id}/retry`, { section }),
+  generateFix: (id, payload) => api.post(`/reviews/${id}/fix`, payload, { timeout: 60000 }),
 };
 
 export default api;

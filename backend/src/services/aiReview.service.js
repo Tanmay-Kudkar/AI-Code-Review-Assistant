@@ -37,6 +37,14 @@ const callGemini = async (prompt, retries = 2) => {
       return text;
     } catch (err) {
       console.error(`[AiReview] Attempt ${attempt + 1} failed:`, err.message);
+      
+      // Fast-fail on rate limits or quota issues with a friendly user-facing message
+      if (err.message.includes('429') || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate limit')) {
+        const error = new Error('Our AI providers are currently experiencing heavy traffic. Please try again in a few moments.');
+        error.status = 429;
+        throw error;
+      }
+
       if (attempt < retries) {
         const backoffMs = 1000 * Math.pow(2, attempt);
         await new Promise((r) => setTimeout(r, backoffMs));
@@ -47,18 +55,25 @@ const callGemini = async (prompt, retries = 2) => {
   }
 };
 
+const { jsonrepair } = require('jsonrepair');
+
 /**
- * Safely parses a raw JSON string, falling back to regex extraction if needed.
+ * Safely parses a raw JSON string, utilizing jsonrepair to fix truncation or trailing characters.
  * @param {string} raw
  * @returns {Object}
  */
 const safeParseJson = (raw) => {
   try {
     return JSON.parse(raw);
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-    return {};
+  } catch (err) {
+    try {
+      // Clean markdown code blocks if present
+      let cleaned = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+      return JSON.parse(jsonrepair(cleaned));
+    } catch (innerErr) {
+      console.error('[AiReview] JSON Repair failed:', innerErr.message);
+      return {};
+    }
   }
 };
 
@@ -89,7 +104,8 @@ Return ONLY a valid JSON object with EXACTLY these keys:
 }
 
 Rules:
-- Be exhaustive. Do not skip any real issue, even minor ones.
+- Be exhaustive, but for large codebases limit your response to the top 20 most critical issues overall.
+- Do not skip any real issue, even minor ones.
 - Return empty arrays [] if a category genuinely has no issues.
 - For bugs, identify the exact line if possible.
 - For security, be specific about the attack vector and provide a concrete fix.
@@ -132,26 +148,28 @@ const runDocumentationSection = async (code, language, framework = 'none') => {
 
   const frameworkContext = framework !== 'none' ? ` Assume the context of a ${framework} application where appropriate.` : '';
 
-  const prompt = `You are a technical documentation specialist. Your job is to write comprehensive, production-grade ${docStyle} documentation for the provided ${language} code.${frameworkContext}
+  const prompt = `You are an expert software architect and technical writer. Your task is to write a comprehensive, professional GitHub-style README report for the following ${language} code review.${frameworkContext}
 
 Return ONLY a valid JSON object with EXACTLY this key:
 {
   "documentation": "string"
 }
 
-The "documentation" value must contain complete ${docStyle} comment blocks for EVERY function, method, and class in the code. Each block MUST include:
-1. A clear, professional summary description (2–3 sentences explaining what the function/class does and WHY it exists)
-2. @param / :param tags with types AND descriptions for every parameter, including edge cases
-3. @returns / :returns tag with type and description of the return value
-4. @throws / :raises tags for every possible exception or error condition
-5. @example block showing realistic usage (where applicable)
-6. Notes on any important side effects, preconditions, or performance characteristics
+The "documentation" value MUST contain a highly detailed Markdown report. It should include:
+1. An Executive Summary of the code's purpose.
+Use beautiful, professional Markdown formatting with strict spacing:
+- ALWAYS use proper Markdown tables (with | column | syntax) for the Complexity Analysis.
+- ALWAYS use explicit Markdown headers (e.g. '## 1. Executive Summary', '### Bugs') instead of plain text.
+- ALWAYS leave a blank empty line between different paragraphs, lists, and headers to ensure the Markdown renderer spacing works correctly.
+- DO NOT use LaTeX math syntax (e.g. $O(N)$ or $M$). The Markdown renderer does not support LaTeX. Wrap Big-O notation and variables in inline code syntax using single quotes in this instruction (e.g. 'O(N)' or 'M') but output proper markdown inline code ticks in the result.
+- Use fenced code blocks for code snippets.
 
-Write the documentation as a single string with newlines (\\n) as separators, ready to be inserted directly into the source file. Do NOT describe what to write — write the actual documentation text.
+CRITICAL JSON REQUIREMENT:
+You must return ONLY valid JSON. If your Markdown string contains multiple lines, you MUST escape all newlines as '\\n' and double quotes as '\\"' so the JSON parser does not crash with an "Unterminated string" error. Do NOT output unescaped raw newlines inside the JSON string value.
 
-RESPOND ONLY WITH VALID JSON. No markdown fences, no explanation.
+RESPOND ONLY WITH VALID JSON. No markdown fences around the JSON, no explanation.
 
-${language} code to document:
+${language} code to review and document:
 \`\`\`${language}
 ${code}
 \`\`\``;
@@ -190,6 +208,7 @@ Return ONLY a valid JSON object with EXACTLY this key:
 
 Rules:
 - Analyze EVERY function and method individually. Do not group them.
+- For large codebases, limit the analysis to the top 20 most important/complex functions.
 - Use precise standard Big-O notation. Simplify (e.g. O(3n²) → O(n²)).
 - Consider both best-case and worst-case; report worst-case unless the function is trivially O(1).
 - The "explanation" field must clearly state which line/operation dominates the complexity.
@@ -238,6 +257,8 @@ The "refactoring" value must be a comprehensive prose report that covers:
 7. **Testability**: How easy is it to unit test this code? What refactors would improve testability?
 8. **Concrete Action Plan**: Provide a numbered, prioritized list of the top 5 most impactful refactoring steps to take immediately.
 
+Keep your response extremely concise. The value should be a maximum of 400 words.
+
 Write in a direct, professional, technical tone. Be specific — reference actual function names, variable names, and line patterns from the code. Minimum 300 words.
 
 RESPOND ONLY WITH VALID JSON. No markdown fences, no explanation.
@@ -279,10 +300,46 @@ const runAiReview = async (code, language) => {
   };
 };
 
+// ─── Section E: Generate Fix ──────────────────────────────────────────────────
+/**
+ * Generates a targeted code fix for a specific issue.
+ */
+const generateFixSnippet = async (code, language, issueDescription, line) => {
+  const lineContext = line ? `\nIssue occurs around line: ${line}` : '';
+  const prompt = `You are a senior software engineer. Fix the following specific issue in this ${language} code.
+  
+Issue Description: ${issueDescription}${lineContext}
+
+Return ONLY a valid JSON object with a single key "fix" containing the fixed raw code snippet.
+CRITICAL: 
+1. Do NOT return the entire file. ONLY return the specific function, block, or few lines of code that you modified to fix the issue. Keep it concise.
+2. In the fixed code, you MUST insert a prominent comment (using ${language} native comment syntax) directly above the lines you changed, explicitly stating what the original issue was and what you fixed. For example: "// FIXED [Line 5]: Replaced loose equality to prevent coercion"
+
+Code:
+${code}`;
+
+  const raw = await callGemini(prompt);
+  const parsed = safeParseJson(raw);
+  
+  // Try to find the code in common keys, or just grab the first string value in the object
+  let fix = parsed.fix || parsed.fixedCode || parsed.fixed_code || parsed.code;
+  if (!fix && typeof parsed === 'object' && parsed !== null) {
+    const firstStringValue = Object.values(parsed).find(v => typeof v === 'string');
+    if (firstStringValue) fix = firstStringValue;
+  }
+  
+  // Fallback to raw if we still couldn't extract it
+  fix = fix || raw;
+  if (typeof fix !== 'string') fix = JSON.stringify(fix, null, 2);
+
+  return fix.replace(/^```[a-z]*\n/i, '').replace(/\n```$/i, '').trim();
+};
+
 module.exports = {
   runAiReview,
   runAiReviewSection,
   runDocumentationSection,
   runBigOSection,
   runRefactoringSection,
+  generateFixSnippet,
 };

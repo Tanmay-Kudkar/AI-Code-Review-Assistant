@@ -40,14 +40,21 @@ const runESLint = async (code, language) => {
 
   // ⚙️ Configure strict rules for the static analyzer
   const eslint = new ESLint({
-    useEslintrc: false, // Ignore the user's local eslintrc so we have a standard baseline
-    overrideConfig: {
-      env: { browser: true, es2021: true, node: true },
-      extends: ['eslint:recommended'],
-      parserOptions: {
+    overrideConfigFile: true, // Use flat config
+    overrideConfig: [{
+      files: ['**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx'],
+      languageOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',
-        ecmaFeatures: { jsx: true },
+        parserOptions: {
+          ecmaFeatures: { jsx: true }
+        },
+        globals: {
+          console: 'readonly', window: 'readonly', document: 'readonly',
+          process: 'readonly', require: 'readonly', module: 'readonly',
+          __dirname: 'readonly', setTimeout: 'readonly', setInterval: 'readonly',
+          Promise: 'readonly', fetch: 'readonly', React: 'readonly'
+        }
       },
       rules: {
         'no-unused-vars': 'warn',
@@ -59,8 +66,14 @@ const runESLint = async (code, language) => {
         'no-empty': 'warn',
         'no-unreachable': 'error',
         'no-constant-condition': 'warn',
+        'no-const-assign': 'error',
+        'no-redeclare': 'error',
+        'no-dupe-keys': 'error',
+        'no-dupe-args': 'error',
+        'valid-typeof': 'error',
+        'no-use-before-define': 'warn',
       },
-    },
+    }],
   });
 
   // 🚀 Lint the raw text in memory!
@@ -130,11 +143,84 @@ const runPylint = async (code) => {
         return [];
       }
     }
+    
+    // If stdout is empty, it means pylint command failed completely (e.g., not installed)
+    if (err.message && (err.message.includes('not found') || err.message.includes('not recognized') || err.code === 'ENOENT')) {
+      return [{
+        line: 1, column: 1, severity: 'warning', rule: 'system-error',
+        message: 'Pylint is not installed on the server. Python static analysis is disabled.'
+      }];
+    }
+    
     return [];
   } finally {
     // 🧹 ALWAYS clean up the temporary file, even if it crashes!
     if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
   }
+};
+
+/**
+ * 🌍 Universal Regex-based Linter
+ * 
+ * Used as a fallback for languages where we don't have a dedicated AST-based static analyzer.
+ * Uses smart regex rules to catch common bugs, security flaws, and code smells across ANY language!
+ */
+const runUniversalLinter = (code) => {
+  const issues = [];
+  const lines = code.split('\n');
+
+  const rules = [
+    {
+      id: 'hardcoded-credentials',
+      sev: 'error',
+      msg: 'Possible hardcoded credential or password detected.',
+      regex: /(password|secret|api_key|token)\s*[:=]\s*["'][^"']+["']/i
+    },
+    {
+      id: 'sql-injection-risk',
+      sev: 'error',
+      msg: 'Potential SQL Injection vulnerability. Avoid concatenating raw variables into SQL queries.',
+      regex: /(SELECT|UPDATE|DELETE|INSERT)\s+.*(=\s*["']?\s*[\+\.]|f["'].*\{|=\s*\$[a-zA-Z])/i
+    },
+    {
+      id: 'todo-comment',
+      sev: 'info',
+      msg: 'TODO or FIXME comment found. Make sure to resolve this before production.',
+      regex: /\b(TODO|FIXME|HACK|XXX)\b/
+    },
+    {
+      id: 'empty-catch',
+      sev: 'warning',
+      msg: 'Empty catch/except block detected. Exceptions should be handled or logged.',
+      regex: /(catch\s*\([^\)]*\)\s*\{\s*\}|except\s*.*:\s*pass)/
+    },
+    {
+      id: 'xss-risk',
+      sev: 'error',
+      msg: 'Potential XSS vulnerability. Direct HTML concatenation or unsafe rendering detected.',
+      regex: /(dangerouslySetInnerHTML|innerHTML\s*=|new\s+Response\s*\(\s*['"]<[a-z])/i
+    }
+  ];
+
+  lines.forEach((line, index) => {
+    rules.forEach(rule => {
+      // Don't flag rules on comment lines (except the TODO rule)
+      const isComment = line.trim().startsWith('//') || line.trim().startsWith('#') || line.trim().startsWith('/*');
+      if (rule.id !== 'todo-comment' && isComment) return;
+      
+      if (rule.regex.test(line)) {
+        issues.push({
+          line: index + 1,
+          column: 1,
+          severity: rule.sev,
+          rule: rule.id,
+          message: rule.msg
+        });
+      }
+    });
+  });
+
+  return issues;
 };
 
 /**
@@ -171,10 +257,14 @@ const runStaticAnalysis = async (code, language) => {
         break;
       case 'python':
         issues = await runPylint(code);
+        // Fallback to Universal Linter if Pylint is not installed on the server
+        if (issues.length === 1 && issues[0].rule === 'system-error') {
+          issues = runUniversalLinter(code);
+        }
         break;
       default:
-        // 🤷‍♂️ For unsupported languages, return an empty array gracefully (don't crash!)
-        issues = [];
+        // 🌍 For all other languages, run the Universal Regex Linter!
+        issues = runUniversalLinter(code);
     }
   } catch (err) {
     console.error(`[StaticAnalysis] Error running analysis for ${language}:`, err.message);

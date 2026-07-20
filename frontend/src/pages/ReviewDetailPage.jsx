@@ -14,6 +14,10 @@ import {
 } from 'recharts';
 import Editor from '@monaco-editor/react';
 import Skeleton from '../components/ui/Skeleton';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 const TABS = [
@@ -48,7 +52,48 @@ const SeverityBadge = ({ sev }) => {
 };
 
 // ─── AI Score Hero ────────────────────────────────────────────────────────────
-const ScoreHero = ({ review }) => {
+const ScoreHeroSkeleton = () => (
+  <div className="card mb-6 relative overflow-hidden bg-surface-800">
+    <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ background: 'linear-gradient(90deg, transparent, rgba(124,92,255,0.1), transparent)', animation: 'progressPulse 2s ease-in-out infinite' }} />
+    <div className="flex flex-col lg:flex-row items-center gap-8 opacity-60">
+      <div className="flex flex-col items-center gap-2 flex-shrink-0">
+        <div className="relative w-36 h-36 flex items-center justify-center">
+          <svg className="w-36 h-36 -rotate-90 absolute" viewBox="0 0 128 128">
+            <circle cx="64" cy="64" r="54" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="10" />
+          </svg>
+          <Loader className="w-8 h-8 text-brand-400 animate-spin" />
+        </div>
+        <div className="text-center">
+          <span className="text-sm font-bold text-slate-300">Calculating...</span>
+        </div>
+      </div>
+      <div className="hidden lg:block w-px h-32 bg-surface-700" />
+      <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {[
+          { label: 'Maintainability', color: 'bg-brand-500/20' },
+          { label: 'Security', color: 'bg-emerald-500/20' },
+          { label: 'Performance', color: 'bg-amber-500/20' },
+          { label: 'Readability', color: 'bg-blue-500/20' },
+        ].map(m => (
+          <div key={m.label}>
+            <div className="flex justify-between mb-1.5">
+              <span className="text-sm text-slate-400 font-medium">{m.label}</span>
+              <Loader className="w-3.5 h-3.5 text-slate-500 animate-spin" />
+            </div>
+            <div className="h-2 bg-surface-900 rounded-full overflow-hidden">
+              <div className={`h-full ${m.color} rounded-full w-full`} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const ScoreHero = ({ review, sectionsStatus }) => {
+  const isProcessing = sectionsStatus?.aiReview === 'processing' || sectionsStatus?.aiReview === 'pending';
+  if (isProcessing) return <ScoreHeroSkeleton />;
+
   const bugs = review.aiResult?.bugs?.length ?? 0;
   const security = review.aiResult?.security?.length ?? 0;
   const smells = review.aiResult?.smells?.length ?? 0;
@@ -147,7 +192,7 @@ const StaticTab = ({ staticResult }) => {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {cards.map((c) => (
           <div key={c.label} className={`rounded-xl border p-5 ${c.bg} ${c.border}`}>
             <div className="flex items-center justify-between mb-3">
@@ -218,18 +263,18 @@ const GeneratingSection = ({ section }) => {
   return (
     <div className="space-y-6">
       {/* Pulsing hero banner */}
-      <div className="relative overflow-hidden rounded-2xl border border-brand-500/20 p-8" style={{ background: 'linear-gradient(135deg, #141B2D 0%, #1B2338 100%)' }}>
+      <div className="relative overflow-hidden rounded-2xl border border-brand-500/20 p-5 sm:p-8" style={{ background: 'linear-gradient(135deg, #141B2D 0%, #1B2338 100%)' }}>
         <div className="absolute inset-0 opacity-30" style={{ background: 'radial-gradient(ellipse at 20% 50%, rgba(124,92,255,0.25) 0%, transparent 60%), radial-gradient(ellipse at 80% 50%, rgba(124,92,255,0.15) 0%, transparent 60%)' }} />
-        <div className="relative flex items-center gap-6">
-          <div className="w-16 h-16 rounded-2xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center text-3xl flex-shrink-0" style={{ animation: 'pulse 2s ease-in-out infinite' }}>
+        <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-4">
+          <div className="w-14 h-14 rounded-2xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center text-3xl flex-shrink-0" style={{ animation: 'pulse 2s ease-in-out infinite' }}>
             {m.icon}
           </div>
           <div className="flex-1">
-            <h3 className="text-xl font-bold text-white mb-1">{m.title}</h3>
+            <h3 className="text-lg sm:text-xl font-bold text-white mb-1">{m.title}</h3>
             <p className="text-sm text-slate-400 leading-relaxed max-w-xl">{m.sub}</p>
           </div>
-          <div className="flex flex-col items-center gap-2 flex-shrink-0">
-            <Loader className="w-8 h-8 text-brand-400 animate-spin" />
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Loader className="w-6 h-6 text-brand-400 animate-spin" />
             <span className="text-xs text-slate-500">Processing</span>
           </div>
         </div>
@@ -264,11 +309,36 @@ const SectionFailed = ({ onRetry }) => (
   </div>
 );
 
+// ─── Section Skipped Banner ───────────────────────────────────────────────────
+const SectionSkipped = ({ section, onRetry }) => {
+  const messages = {
+    aiReview: { icon: '🤖', title: 'AI Review Skipped', sub: 'You chose not to run the AI Code Review module for this submission.' },
+    documentation: { icon: '📚', title: 'Documentation Skipped', sub: 'You chose not to generate documentation for this submission.' },
+    bigO: { icon: '🔢', title: 'Complexity Analysis Skipped', sub: 'You chose not to analyze time and space complexity for this submission.' },
+    refactoring: { icon: '🏗️', title: 'Refactoring Advice Skipped', sub: 'You chose not to generate refactoring advice for this submission.' },
+  };
+  const m = messages[section] || messages.aiReview;
+
+  return (
+    <div className="text-center py-14 rounded-2xl border border-surface-700 bg-surface-800">
+      <div className="w-14 h-14 rounded-full bg-surface-700 flex items-center justify-center text-2xl mx-auto mb-4">{m.icon}</div>
+      <p className="text-white font-semibold text-lg">{m.title}</p>
+      <p className="text-sm text-slate-400 mt-1 mb-6 max-w-md mx-auto">{m.sub}</p>
+      {onRetry && (
+        <button onClick={() => onRetry(section)} className="btn-primary text-sm px-6 py-2 mx-auto">
+          <Zap className="w-4 h-4 mr-2" /> Run Analysis Now
+        </button>
+      )}
+    </div>
+  );
+};
+
 // ─── AI Review Tab ────────────────────────────────────────────────────────────
-const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
+const AiTab = ({ aiResult, sectionStatus, onNavigateToLine, onRetry, onGenerateFix }) => {
   const status = sectionStatus?.aiReview || 'pending';
+  if (status === 'skipped') return <SectionSkipped section="aiReview" onRetry={() => onRetry('aiReview')} />;
   if (status === 'processing' || status === 'pending') return <GeneratingSection section="aiReview" />;
-  if (status === 'failed') return <SectionFailed />;
+  if (status === 'failed') return <SectionFailed onRetry={() => onRetry('aiReview')} />;
   if (!aiResult) return <GeneratingSection section="aiReview" />;
 
   const bugsCount = (aiResult.bugs?.length || 0) + (aiResult.security?.length || 0);
@@ -291,7 +361,12 @@ const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
     <div className="space-y-10">
       {/* 13 & 17. AI Summary & Confidence */}
       <div className="card bg-gradient-to-br from-surface-800 to-surface-900 border-surface-700 p-6">
-        <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2"><Zap className="w-5 h-5 text-brand-400" /> AI Summary</h3>
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-bold text-white flex items-center gap-2"><Zap className="w-5 h-5 text-brand-400" /> AI Summary</h3>
+          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={() => onRetry('aiReview')}>
+            <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+          </button>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
           <div>
             <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Overall Quality</p>
@@ -355,8 +430,8 @@ const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
                           <SeverityBadge sev={sev} />
                           <h4 className="text-[16px] font-bold text-white">{title}</h4>
                         </div>
-                        {/* 12. Fix Button (Mock) */}
-                        <button className="hidden sm:flex opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 text-brand-300 hover:bg-brand-500/20 text-xs font-bold border border-brand-500/20 shadow-sm cursor-pointer hover:shadow">
+                        {/* 12. Fix Button */}
+                        <button onClick={() => onGenerateFix(item)} className="hidden sm:flex opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 text-brand-300 hover:bg-brand-500/20 text-xs font-bold border border-brand-500/20 shadow-sm cursor-pointer hover:shadow">
                           <Zap className="w-3.5 h-3.5" /> Generate Fix
                         </button>
                       </div>
@@ -375,7 +450,7 @@ const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
                             <span className="text-brand-400 text-sm">📍</span> Line {item.line}
                           </div>
                         )}
-                        <button className="sm:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 text-brand-300 text-xs font-bold border border-brand-500/20 cursor-pointer">
+                        <button onClick={() => onGenerateFix(item)} className="sm:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-500/10 text-brand-300 text-xs font-bold border border-brand-500/20 cursor-pointer">
                           <Zap className="w-3 h-3" /> Fix
                         </button>
                       </div>
@@ -426,7 +501,19 @@ const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
       )}
 
       {/* 5 & 11. Refactoring Advice */}
-      {aiResult.refactoring && (
+      {sectionStatus?.refactoring === 'skipped' ? (
+        <div className="mt-8">
+          <SectionSkipped section="refactoring" onRetry={() => onRetry('refactoring')} />
+        </div>
+      ) : sectionStatus?.refactoring === 'processing' || sectionStatus?.refactoring === 'pending' ? (
+        <div className="mt-8">
+          <GeneratingSection section="refactoring" />
+        </div>
+      ) : sectionStatus?.refactoring === 'failed' ? (
+        <div className="mt-8">
+          <SectionFailed onRetry={() => onRetry('refactoring')} />
+        </div>
+      ) : aiResult.refactoring && (
         <div className="space-y-4">
           <div className="border-b border-surface-700/50 pb-3 flex items-center gap-3">
             <div className="p-2 rounded-lg bg-brand-500/15">
@@ -481,9 +568,10 @@ const AiTab = ({ aiResult, sectionStatus, onNavigateToLine }) => {
 };
 
 // ─── Complexity Tab ───────────────────────────────────────────────────────────
-const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
+const ComplexityTab = ({ complexity, aiResult, sectionStatus, onRetry }) => {
   if (!complexity) return <p className="text-slate-500 text-sm">No complexity data yet.</p>;
   const bigOStatus = sectionStatus?.bigO || 'pending';
+  const showBigOSkipped = bigOStatus === 'skipped';
   const showBigOSkeleton = bigOStatus === 'processing' || bigOStatus === 'pending';
   const showBigOFailed = bigOStatus === 'failed';
 
@@ -533,8 +621,8 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
     { label: 'Lines of Code', value: complexity.linesOfCode, sub: 'non-blank', icon: '📄' },
     { label: 'Functions', value: complexity.numFunctions, sub: 'defined', icon: '⚡' },
     { label: 'Classes', value: complexity.numClasses, sub: 'defined', icon: '📦' },
-    { label: 'Time', value: overallTime, sub: 'overall O()', icon: '⏱️' },
-    { label: 'Space', value: overallSpace, sub: 'overall O()', icon: '💾' },
+    { label: 'Time', value: showBigOSkeleton ? <div className="flex justify-center mt-1"><Loader className="w-6 h-6 text-brand-400 animate-spin" /></div> : overallTime, sub: 'overall O()', icon: '⏱️' },
+    { label: 'Space', value: showBigOSkeleton ? <div className="flex justify-center mt-1"><Loader className="w-6 h-6 text-emerald-400 animate-spin" /></div> : overallSpace, sub: 'overall O()', icon: '💾' },
   ];
 
   const maintainability = Math.max(0, Math.min(100, 100 - (complexity.cyclomaticAvg || 1) * 10));
@@ -548,7 +636,8 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
         .map(c => {
           const num = parseBigO(c.timeComplexity);
           return {
-            name: c.functionName.length > 12 ? c.functionName.slice(0, 12) + '…' : c.functionName,
+            name: c.functionName.length > 25 ? c.functionName.slice(0, 25) + '…' : c.functionName,
+            fullName: c.functionName,
             complexity: num,
             display: c.timeComplexity,
             space: c.spaceComplexity,
@@ -558,7 +647,8 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
     : (complexity.complexity || [])
         .slice(0, 15)
         .map(fn => ({
-          name: fn.name.length > 12 ? fn.name.slice(0, 12) + '…' : fn.name,
+          name: fn.name.length > 25 ? fn.name.slice(0, 25) + '…' : fn.name,
+          fullName: fn.name,
           complexity: fn.complexity,
           display: formatComplexity(fn.complexity),
           space: '—',
@@ -567,9 +657,10 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload?.length) {
+      const fullLabel = payload[0].payload.fullName || label;
       return (
         <div className="bg-surface-800 border border-surface-700 rounded-xl p-3 shadow-xl text-sm min-w-[150px]">
-          <p className="text-white font-semibold mb-2">{label}</p>
+          <p className="text-white font-semibold mb-2">{fullLabel}</p>
           <div className="flex justify-between items-center mb-1">
             <span className="text-slate-400">Time:</span>
             <span className="text-brand-300 font-bold ml-2">{payload[0].payload.display}</span>
@@ -586,8 +677,17 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h3 className="font-semibold text-white flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-brand-400" /> Complexity Analysis
+        </h3>
+        <button className="btn-secondary py-1.5 px-3 text-xs" onClick={() => onRetry('bigO')}>
+          <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+        </button>
+      </div>
+
       {/* Top metrics row */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Overall difficulty - spans 1 cell */}
         <div className={`rounded-xl border p-5 ${dc.bg} ${dc.border} flex flex-col justify-between`}>
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Overall Difficulty</p>
@@ -615,7 +715,7 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
       </div>
 
       {/* Metric cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {metrics.map((m) => (
           <div key={m.label} className="rounded-xl border border-surface-700/50 p-4 text-center" style={{ background: '#1E2A45' }}>
             <span className="text-2xl mb-2 block">{m.icon}</span>
@@ -627,10 +727,14 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
       </div>
 
       {/* Per-function chart */}
-      {showBigOSkeleton ? (
+      {showBigOSkipped ? (
+        <div className="mt-8">
+          <SectionSkipped section="bigO" onRetry={() => onRetry('bigO')} />
+        </div>
+      ) : showBigOSkeleton ? (
         <GeneratingSection section="bigO" />
       ) : showBigOFailed ? (
-        <SectionFailed />
+        <SectionFailed onRetry={() => onRetry('bigO')} />
       ) : chartData.length > 0 ? (
         <div className="card">
           <h3 className="font-semibold text-white mb-5 flex items-center gap-2">
@@ -659,62 +763,72 @@ const ComplexityTab = ({ complexity, aiResult, sectionStatus }) => {
 };
 
 // ─── Documentation Tab ────────────────────────────────────────────────────────
-const DocsTab = ({ aiResult, language, sectionStatus }) => {
+const DocsTab = ({ aiResult, language, sectionStatus, onRetry }) => {
   const status = sectionStatus?.documentation || 'pending';
+  if (status === 'skipped') return <SectionSkipped section="documentation" onRetry={() => onRetry('documentation')} />;
   if (status === 'processing' || status === 'pending') return <GeneratingSection section="documentation" />;
-  if (status === 'failed') return <SectionFailed />;
+  if (status === 'failed') return <SectionFailed onRetry={() => onRetry('documentation')} />;
   const docs = aiResult?.documentation || '';
   if (!docs) return <GeneratingSection section="documentation" />;
-  const [view, setView] = useState('preview');
-
   const copy = () => { navigator.clipboard.writeText(docs); toast.success('Copied to clipboard!'); };
   const download = () => {
-    const blob = new Blob([docs], { type: 'text/markdown' });
+    const ext = 'md';
+    const blob = new Blob([docs], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'documentation.md'; a.click();
+    a.href = url; a.download = `documentation.${ext}`; a.click();
     URL.revokeObjectURL(url);
   };
 
   return (
     <div className="space-y-4">
-      {/* Sticky toolbar */}
-      <div className="flex items-center justify-between sticky top-0 z-10 py-2">
-        <div className="flex items-center bg-surface-900 rounded-lg p-1 gap-1 border border-surface-700/50">
-          {['preview', 'markdown'].map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all capitalize ${view === v ? 'bg-brand-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>
-              {v}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={copy} id="copy-docs-btn">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between py-3 bg-surface-800/95 backdrop-blur-md mb-2 gap-3">
+        <h3 className="font-semibold text-white flex items-center gap-2">
+          <FileText className="w-4 h-4 text-brand-400 shrink-0" /> Generated Documentation
+        </h3>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button className="btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={() => onRetry('documentation')}>
+            <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+          </button>
+          <button className="btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={copy}>
             <Copy className="w-3.5 h-3.5" /> Copy
           </button>
-          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={download} id="download-docs-btn">
-            <Download className="w-3.5 h-3.5" /> Download .md
+          <button className="btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={download}>
+            <Download className="w-3.5 h-3.5" /> Download
           </button>
         </div>
       </div>
 
-      {view === 'preview' ? (
-        <div className="rounded-xl border border-surface-700/50 p-6" style={{ background: '#1E2A45' }}>
-          <article className="prose prose-invert prose-sm max-w-none">
-            <pre className="whitespace-pre-wrap text-sm text-slate-300 leading-relaxed font-sans">{docs}</pre>
-          </article>
-        </div>
-      ) : (
-        <div className="rounded-xl overflow-hidden border border-surface-700/50">
-          <Editor
-            height="450px"
-            language="markdown"
-            value={docs}
-            theme="vs-dark"
-            options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, fontFamily: 'JetBrains Mono, monospace', wordWrap: 'on', scrollbar: { alwaysConsumeMouseWheel: false } }}
-          />
-        </div>
-      )}
+      <div className="rounded-xl border border-surface-700/50 bg-surface-800 p-6 shadow-lg overflow-y-auto" style={{ maxHeight: '600px' }}>
+        <article className="prose prose-invert prose-brand max-w-none prose-p:leading-relaxed prose-headings:font-bold prose-headings:tracking-tight prose-a:text-brand-400 prose-pre:bg-[#0B1120] prose-pre:border prose-pre:border-surface-700/50 prose-pre:shadow-md prose-li:marker:text-brand-500 prose-table:w-full prose-table:border-collapse prose-th:bg-surface-700/50 prose-th:px-4 prose-th:py-2 prose-td:border-b prose-td:border-surface-700/50 prose-td:px-4 prose-td:py-3 prose-td:text-slate-300">
+          <ReactMarkdown 
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({node, inline, className, children, ...props}) {
+                const match = /language-(\w+)/.exec(className || '')
+                return !inline && match ? (
+                  <SyntaxHighlighter
+                    style={vscDarkPlus}
+                    language={match[1]}
+                    PreTag="div"
+                    className="rounded-md !bg-[#0B1120] !border !border-surface-700/50 shadow-md !mt-4 !mb-4"
+                    {...props}
+                  >
+                    {String(children).replace(/\n$/, '')}
+                  </SyntaxHighlighter>
+                ) : (
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                )
+              }
+            }}
+          >
+            {docs.includes('#') || docs.includes('```') ? docs : `\`\`\`${language}\n${docs}\n\`\`\``}
+          </ReactMarkdown>
+        </article>
+      </div>
     </div>
   );
 };
@@ -722,10 +836,21 @@ const DocsTab = ({ aiResult, language, sectionStatus }) => {
 // ─── Source Code Viewer ───────────────────────────────────────────────────────
 const CodeViewer = ({ code, language, highlightEvent }) => {
   const [expanded, setExpanded] = useState(false);
+  const [fontSize, setFontSize] = useState(14);
+  const [wordWrap, setWordWrap] = useState(false);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
   const decorationsRef = useRef([]);
   const timeoutRef = useRef(null);
+  const pinchRef = useRef(null);
+
+  const changeFontSize = (delta) => {
+    setFontSize(prev => {
+      const next = Math.min(24, Math.max(8, prev + delta));
+      editorRef.current?.updateOptions({ fontSize: next });
+      return next;
+    });
+  };
 
   const applyHighlight = (line, delayScroll = false) => {
     if (!editorRef.current || !monacoRef.current) return;
@@ -809,19 +934,42 @@ const CodeViewer = ({ code, language, highlightEvent }) => {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <h3 className="font-semibold text-white flex items-center gap-2">
           <Code2 className="w-4 h-4 text-brand-400" /> Source Code
         </h3>
-        <div className="flex items-center gap-2">
-          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={copy}><Copy className="w-3 h-3" /> Copy</button>
-          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={download}><Download className="w-3 h-3" /> Download</button>
-          <button className="btn-secondary py-1.5 px-3 text-xs" onClick={() => setExpanded(!expanded)}>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-0 bg-surface-900 border border-surface-700/50 rounded-lg overflow-hidden shrink-0">
+            <button
+              className="px-2.5 py-1.5 text-sm font-bold text-slate-300 hover:text-white hover:bg-surface-800 transition-colors cursor-pointer"
+              onClick={() => changeFontSize(-1)}
+              title="Decrease font size"
+            >A-</button>
+            <span className="text-[10px] text-slate-300 px-1.5 select-none tabular-nums">{Math.round(fontSize)}px</span>
+            <button
+              className="px-2.5 py-1.5 text-sm font-bold text-slate-300 hover:text-white hover:bg-surface-800 transition-colors cursor-pointer"
+              onClick={() => changeFontSize(1)}
+              title="Increase font size"
+            >A+</button>
+          </div>
+          <button 
+            onClick={() => setWordWrap(!wordWrap)} 
+            className={`btn-secondary py-1.5 px-3 text-xs shrink-0 ${wordWrap ? '!bg-brand-600 !text-white !border-brand-500' : ''}`}
+            title="Toggle Word Wrap"
+          >
+            Wrap
+          </button>
+          <button className="btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={copy}><Copy className="w-3 h-3" /> Copy</button>
+          <button className="hidden sm:inline-flex btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={download}><Download className="w-3 h-3" /> Download</button>
+          <button className="btn-secondary py-1.5 px-3 text-xs shrink-0" onClick={() => setExpanded(!expanded)}>
             {expanded ? 'Collapse' : 'Expand'}
           </button>
         </div>
       </div>
-      <div className="rounded-xl overflow-hidden border border-surface-700/50">
+      <div
+        className="rounded-xl overflow-hidden border-2 border-slate-600"
+        style={{ touchAction: 'pan-x pan-y' }}
+      >
         <Editor
           height={expanded ? '600px' : '360px'}
           language={language}
@@ -832,6 +980,17 @@ const CodeViewer = ({ code, language, highlightEvent }) => {
             if (highlightEvent?.line) {
               applyHighlight(parseInt(highlightEvent.line, 10), true);
             }
+            
+            const cleanupTouch = setupMonacoTouch(editor, monaco, setFontSize);
+            editor.onDidDispose(() => {
+              cleanupTouch();
+            });
+
+            // Keep px indicator in sync
+            editor.onDidChangeConfiguration(() => {
+              const size = editor.getOption(monaco.editor.EditorOption.fontSize);
+              setFontSize(Math.round(size));
+            });
           }}
           beforeMount={(monaco) => {
             monaco.editor.defineTheme('app-dark', {
@@ -840,18 +999,25 @@ const CodeViewer = ({ code, language, highlightEvent }) => {
               colors: { 'editor.background': '#141B2D', 'editor.lineHighlightBackground': '#1B2338' }
             });
           }}
-          theme="app-dark"
-          options={{ readOnly: true, minimap: { enabled: false }, mouseWheelZoom: true, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, fontFamily: 'JetBrains Mono, monospace', bracketPairColorization: { enabled: true }, wordWrap: 'off', padding: { top: 12, bottom: 12 }, scrollbar: { alwaysConsumeMouseWheel: false } }}
+          theme="hc-black"
+          options={{ readOnly: true, minimap: { enabled: false }, mouseWheelZoom: false, fontSize, lineNumbers: 'on', scrollBeyondLastLine: false, renderLineHighlight: 'none', overviewRulerBorder: false, fontFamily: "'JetBrains Mono', 'Fira Code', monospace", fontLigatures: true, bracketPairColorization: { enabled: true }, wordWrap: wordWrap ? 'on' : 'off', padding: { top: 12, bottom: 12 }, scrollbar: { alwaysConsumeMouseWheel: false } }}
         />
       </div>
+      <p className="text-xs text-slate-600 mt-2 sm:hidden text-center">Pinch to zoom · A+ / A− to resize</p>
     </div>
   );
 };
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { useLockBodyScroll } from '../hooks/useLockBodyScroll';
+import { setupMonacoTouch } from '../utils/monacoTouch';
+
 export default function ReviewDetailPage() {
+  useDocumentTitle('Review Details');
   const { id } = useParams();
   const navigate = useNavigate();
+  const lastRetryRef = useRef(0);
   const [review, setReview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
@@ -860,6 +1026,59 @@ export default function ReviewDetailPage() {
   const [sectionsStatus, setSectionsStatus] = useState({
     aiReview: 'pending', documentation: 'pending', bigO: 'pending', refactoring: 'pending'
   });
+
+  // Modal State for AI Generate Fix
+  const [fixModalOpen, setFixModalOpen] = useState(false);
+  const [fixLoading, setFixLoading] = useState(false);
+  useLockBodyScroll(fixModalOpen);
+  const [generatedFixCode, setGeneratedFixCode] = useState('');
+  const [fixingIssue, setFixingIssue] = useState(null);
+  const [wordWrap, setWordWrap] = useState(false);
+  const [fixFontSize, setFixFontSize] = useState(14);
+  const fixEditorRef = useRef(null);
+
+  const changeFixFontSize = (delta) => {
+    setFixFontSize(prev => {
+      const next = Math.min(24, Math.max(8, prev + delta));
+      fixEditorRef.current?.updateOptions({ fontSize: next });
+      return next;
+    });
+  };
+
+  const handleRetry = async (sectionOrEvent = null) => {
+    // If called directly from onClick={handleRetry}, sectionOrEvent is the React event object!
+    const section = typeof sectionOrEvent === 'string' ? sectionOrEvent : null;
+    
+    lastRetryRef.current = Date.now();
+
+    setRetrying(true);
+    if (section) {
+      setSectionsStatus(prev => ({ ...prev, [section]: 'processing' }));
+    } else {
+      setSectionsStatus({ aiReview: 'processing', documentation: 'processing', bigO: 'processing', refactoring: 'processing' });
+    }
+    
+    try {
+      await reviewsApi.retryAi(id, section);
+      if (!section) setReview(null);
+      fetchReview();
+      const sectionNames = {
+        aiReview: 'AI Review',
+        documentation: 'Documentation',
+        bigO: 'Complexity Analysis',
+        refactoring: 'Refactoring'
+      };
+      toast.success(section ? `Regenerating ${sectionNames[section] || section}...` : 'Restarting analysis...');
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to restart analysis. Please try again.');
+      if (section) {
+        setSectionsStatus(prev => ({ ...prev, [section]: 'failed' }));
+      }
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const handleNavigateToLine = (line) => {
     setActiveTab('overview');
@@ -876,6 +1095,26 @@ export default function ReviewDetailPage() {
     }, 200);
   };
 
+  const handleGenerateFix = async (issue) => {
+    setFixingIssue(issue);
+    setFixModalOpen(true);
+    setFixLoading(true);
+    setGeneratedFixCode('');
+
+    try {
+      const issueDescription = issue.description || issue.issue || issue.title || 'Fix this issue';
+      const payload = { issueDescription, line: issue.line || null };
+      const { data } = await reviewsApi.generateFix(id, payload);
+      setGeneratedFixCode(data.fixCode);
+    } catch (err) {
+      const serverMsg = err.response?.data?.error;
+      toast.error(serverMsg || 'Failed to generate fix');
+      setFixModalOpen(false);
+    } finally {
+      setFixLoading(false);
+    }
+  };
+
   const fetchReview = useCallback(async () => {
     try {
       const { data } = await reviewsApi.get(id);
@@ -888,20 +1127,6 @@ export default function ReviewDetailPage() {
     }
   }, [id, navigate]);
 
-  const handleRetry = async () => {
-    setRetrying(true);
-    try {
-      await reviewsApi.retry(id);
-      fetchReview();
-      toast.success('Restarting analysis...');
-    } catch (err) {
-      console.error(err);
-      toast.error('Failed to restart analysis. Please try again.');
-    } finally {
-      setRetrying(false);
-    }
-  };
-
   useEffect(() => { fetchReview(); }, [fetchReview]);
 
   // Poll the full review while it's still processing
@@ -911,14 +1136,18 @@ export default function ReviewDetailPage() {
     return () => clearInterval(interval);
   }, [review, fetchReview]);
 
+  const isAnySectionProcessing = Object.values(sectionsStatus).some(s => s === 'processing' || s === 'pending');
+
   // Poll AI section statuses independently so tabs unlock progressively
   useEffect(() => {
     if (!review || !id) return;
     // If all sections are done/failed, stop polling
-    const allSettled = Object.values(sectionsStatus).every(s => s === 'done' || s === 'failed');
-    if (allSettled && review.status === 'DONE') return;
+    if (!isAnySectionProcessing && review.status === 'DONE') return;
 
     const pollSections = async () => {
+      // Prevent fetching stale DB state immediately after a retry starts
+      if (Date.now() - lastRetryRef.current < 2000) return;
+      
       try {
         const { data } = await reviewsApi.getAiStatus(id);
         setSectionsStatus(data.sectionsStatus);
@@ -928,7 +1157,7 @@ export default function ReviewDetailPage() {
     pollSections(); // Immediate poll
     const interval = setInterval(pollSections, 3000); // Then every 3s
     return () => clearInterval(interval);
-  }, [review?.status, id]);
+  }, [review?.status, id, isAnySectionProcessing]);
 
   if (loading) return (
     <div className="space-y-6 animate-fade-in">
@@ -963,7 +1192,7 @@ export default function ReviewDetailPage() {
         </button>
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-white">{review.title}</h1>
+            <h1 className="text-2xl font-bold text-white break-words">{review.title}</h1>
             <div className="flex items-center gap-3 mt-2.5 flex-wrap">
               <span className="font-mono text-xs px-2.5 py-1 bg-brand-500/10 border border-brand-500/20 rounded-full text-brand-300">{review.language}</span>
               <span className="text-xs text-slate-500 uppercase tracking-wider">{review.sourceType}</span>
@@ -1010,7 +1239,7 @@ export default function ReviewDetailPage() {
                 </p>
               </div>
               <button 
-                onClick={handleRetry} 
+                onClick={() => handleRetry()} 
                 disabled={retrying}
                 className="btn flex-shrink-0 bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors disabled:opacity-50"
               >
@@ -1022,13 +1251,13 @@ export default function ReviewDetailPage() {
         );
       })()}
 
-      {review.status === 'DONE' && (
+      {review.status !== 'FAILED' && (
         <>
           {/* AI Score Hero */}
-          <ScoreHero review={review} />
+          <ScoreHero review={review} sectionsStatus={sectionsStatus} />
 
           {/* Tabs */}
-          <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-2 pt-2 px-1">
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2 pt-2 px-1">
             {TABS.map(({ id: tabId, label, icon: Icon }) => (
               <button
                 key={tabId}
@@ -1047,11 +1276,11 @@ export default function ReviewDetailPage() {
             {activeTab === 'overview' && (
               <div className="space-y-8">
                 {/* Quick stats */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 gap-4">
                   {[
                     { label: 'Static Errors', value: review.staticResult?.summary?.errors ?? 0, color: 'text-red-400', sub: 'No issues detected', icon: XCircle },
                     { label: 'Warnings', value: review.staticResult?.summary?.warnings ?? 0, color: 'text-amber-400', sub: 'Needs attention', icon: AlertTriangle },
-                    { label: 'AI Issues', value: (review.aiResult?.bugs?.length ?? 0) + (review.aiResult?.security?.length ?? 0), color: 'text-brand-400', sub: 'Bugs + security', icon: Zap },
+                    { label: 'AI Issues', value: (sectionsStatus?.aiReview === 'processing' || sectionsStatus?.aiReview === 'pending') ? <Loader className="w-8 h-8 text-brand-400 animate-spin" /> : (review.aiResult?.bugs?.length ?? 0) + (review.aiResult?.security?.length ?? 0), color: 'text-brand-400', sub: 'Bugs + security', icon: Zap },
                     { label: 'Complexity', value: review.complexity?.difficulty ?? '—', color: review.complexity?.difficulty === 'High' ? 'text-red-400' : review.complexity?.difficulty === 'Medium' ? 'text-amber-400' : 'text-emerald-400', sub: 'Overall difficulty', icon: BarChart3 },
                   ].map(s => (
                     <div key={s.label} className="rounded-xl border border-surface-700/50 p-5" style={{ background: '#1E2A45' }}>
@@ -1072,11 +1301,119 @@ export default function ReviewDetailPage() {
               </div>
             )}
             {activeTab === 'static' && <StaticTab staticResult={review.staticResult} />}
-            {activeTab === 'ai' && <AiTab aiResult={review.aiResult} sectionStatus={sectionsStatus} onNavigateToLine={handleNavigateToLine} />}
-            {activeTab === 'complexity' && <ComplexityTab complexity={review.complexity} aiResult={review.aiResult} sectionStatus={sectionsStatus} />}
-            {activeTab === 'docs' && <DocsTab aiResult={review.aiResult} language={review.language} sectionStatus={sectionsStatus} />}
+            {activeTab === 'ai' && <AiTab aiResult={review.aiResult} sectionStatus={sectionsStatus} onNavigateToLine={handleNavigateToLine} onRetry={() => handleRetry('aiReview')} onGenerateFix={handleGenerateFix} />}
+            {activeTab === 'complexity' && <ComplexityTab complexity={review.complexity} aiResult={review.aiResult} sectionStatus={sectionsStatus} onRetry={() => handleRetry('bigO')} />}
+            {activeTab === 'docs' && <DocsTab aiResult={review.aiResult} language={review.language} sectionStatus={sectionsStatus} onRetry={() => handleRetry('documentation')} />}
           </div>
         </>
+      )}
+
+      {/* AI Generate Fix Modal (VS Code style) */}
+      {fixModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-4xl bg-[#1e1e1e] rounded-xl border border-surface-700 shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '85vh' }}>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-4 py-3 bg-[#252526] border-b border-[#333] flex-wrap gap-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <Zap className="w-4 h-4 text-brand-400 flex-shrink-0" />
+                <h3 className="text-sm font-semibold text-white truncate">
+                  AI Fix: {fixingIssue?.title || fixingIssue?.type || fixingIssue?.issue || 'Generated Code'}
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Font size controls */}
+                <div className="flex items-center gap-0 bg-[#1e1e1e] border border-[#444] rounded-md overflow-hidden">
+                  <button
+                    onClick={() => changeFixFontSize(-1)}
+                    className="px-2 py-1 text-sm font-bold text-slate-400 hover:text-white hover:bg-[#333] transition-colors cursor-pointer"
+                    title="Decrease font size"
+                  >A-</button>
+                  <span className="text-[10px] text-slate-300 px-1 select-none tabular-nums">{Math.round(fixFontSize)}px</span>
+                  <button
+                    onClick={() => changeFixFontSize(1)}
+                    className="px-2 py-1 text-sm font-bold text-slate-400 hover:text-white hover:bg-[#333] transition-colors cursor-pointer"
+                    title="Increase font size"
+                  >A+</button>
+                </div>
+                <button 
+                  onClick={() => setWordWrap(!wordWrap)} 
+                  className={`btn-secondary !py-1 !px-3 !text-xs ${wordWrap ? '!bg-brand-600 !text-white !border-brand-500' : ''}`}
+                  title="Toggle Word Wrap"
+                >
+                  Wrap
+                </button>
+                <button onClick={() => setFixModalOpen(false)} className="text-slate-400 hover:text-white transition-colors">
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            {/* Modal Body */}
+            <div className="flex-1 bg-[#1e1e1e] relative min-h-[400px]">
+              {fixLoading ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <Loader className="w-8 h-8 text-brand-400 animate-spin mb-4" />
+                  <p className="text-slate-300 text-sm animate-pulse">Generating AI Fix...</p>
+                </div>
+              ) : generatedFixCode ? (
+                <div
+                  className="h-full pt-4 border-t-2 border-slate-600"
+                  style={{ touchAction: 'pan-x pan-y' }}
+                >
+                  <Editor
+                    height="400px"
+                    language={review.language}
+                    theme="hc-black"
+                    value={generatedFixCode}
+                    onMount={(editor, monaco) => {
+                      fixEditorRef.current = editor;
+                      const cleanupTouch = setupMonacoTouch(editor, monaco, setFixFontSize);
+                      editor.onDidDispose(() => {
+                        cleanupTouch();
+                      });
+                      // Keep px indicator in sync
+                      editor.onDidChangeConfiguration(() => {
+                        const size = editor.getOption(monaco.editor.EditorOption.fontSize);
+                        setFixFontSize(Math.round(size));
+                      });
+                    }}
+                    options={{
+                      readOnly: true,
+                      minimap: { enabled: false },
+                      fontSize: fixFontSize,
+                      scrollBeyondLastLine: false,
+                      wordWrap: wordWrap ? 'on' : 'off',
+                      mouseWheelZoom: false,
+                      renderLineHighlight: 'none',
+                      overviewRulerBorder: false,
+                      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                      fontLigatures: true,
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <p className="text-red-400 text-sm">Failed to generate fix.</p>
+                </div>
+              )}
+            </div>
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end gap-3 px-4 py-3 bg-[#252526] border-t border-[#333]">
+              <button onClick={() => setFixModalOpen(false)} className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors">
+                Close
+              </button>
+              <button 
+                disabled={!generatedFixCode}
+                onClick={() => {
+                  navigator.clipboard.writeText(generatedFixCode);
+                  toast.success('Fix copied to clipboard!');
+                }}
+                className="btn-primary text-xs px-4 py-2 disabled:opacity-50 flex items-center gap-2"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copy Code
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
